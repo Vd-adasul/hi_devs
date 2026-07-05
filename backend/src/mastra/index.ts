@@ -2,6 +2,9 @@ import { Mastra } from '@mastra/core';
 import { Agent } from '@mastra/core/agent';
 import { createStep, Workflow } from '@mastra/core/workflows';
 import { DbService } from '../services/db.service.js';
+import { QdrantService } from '../services/qdrant.service.js';
+import { getEmbedding } from '../utils/embedding.js';
+import { objectIdToUuid } from '../utils/uuid.js';
 import { ObjectId } from 'mongodb';
 import { storeClausesTool, searchQdrantTool, verifyCitationTool } from './tools.js';
 import dotenv from 'dotenv';
@@ -22,7 +25,7 @@ export const documentProcessingAgent = new Agent({
     You also extract parties, obligations, and legal events.
     Use the store-clauses tool to persist the structured clauses to MongoDB and index them in Qdrant Cloud.
   `,
-  model: 'google/gemini-1.5-flash',
+  model: 'google/gemini-2.5-flash',
   tools: { storeClausesTool },
 });
 
@@ -35,7 +38,7 @@ export const timelineAgent = new Agent({
     Your goal is to parse extracted obligations and legal events (dates, renewal notice windows, schedules) and produce a clean, structured timeline report.
     Group events chronologically by: Deadlines, Renewals, Expirations, Notice Periods, and Payment Schedules.
   `,
-  model: 'google/gemini-1.5-flash',
+  model: 'google/gemini-2.5-flash',
   tools: {},
 });
 
@@ -48,7 +51,7 @@ export const riskAgent = new Agent({
     You examine clauses and obligations, and determine their risk level (low, medium, high) based on standard contract rules (e.g. Unlimited Liability, Auto Renewal without termination, etc.).
     Provide a clear business impact analysis and reasoning for each risk identified.
   `,
-  model: 'google/gemini-1.5-flash',
+  model: 'google/gemini-2.5-flash',
   tools: {},
 });
 
@@ -63,7 +66,7 @@ export const qaAgent = new Agent({
     Always cite your sources (clause ID, page number, document name) precisely.
     Use search-qdrant to retrieve relevant vector context.
   `,
-  model: 'google/gemini-1.5-flash',
+  model: 'google/gemini-2.5-flash',
   tools: { searchQdrantTool },
 });
 
@@ -77,7 +80,7 @@ export const benchmarkAgent = new Agent({
     Identify gaps, favorable/unfavorable deviations, and suggest redlines.
     Use search-qdrant to find similar clauses.
   `,
-  model: 'google/gemini-1.5-flash',
+  model: 'google/gemini-2.5-flash',
   tools: { searchQdrantTool },
 });
 
@@ -90,7 +93,7 @@ export const citationAgent = new Agent({
     Your job is to look at any citations mentioned in legal research or answers and verify them.
     Use verify-citation to check if the statutory case law actually exists in case law records or legal databases.
   `,
-  model: 'google/gemini-1.5-flash',
+  model: 'google/gemini-2.5-flash',
   tools: { verifyCitationTool },
 });
 
@@ -114,12 +117,8 @@ const extractClausesStep = createStep({
     const { orgId, matterId, documentId, rawText, pageCount } = triggerData;
 
     const prompt = `
-      Please process the following legal document text.
-      Matter ID: ${matterId}
-      Document ID: ${documentId}
-      Organization ID: ${orgId}
-
-      Document Text:
+      You are analyzing a legal contract for Organization ID: ${orgId}, Matter ID: ${matterId}, Document ID: ${documentId}.
+      Here is the contract text:
       ---
       ${rawText}
       ---
@@ -127,12 +126,69 @@ const extractClausesStep = createStep({
       Analyze the text. Break it down into logical clauses.
       For each clause, identify its category (e.g. Termination, Liability, Payment, Indemnity, General, Governing Law).
       Map each clause to its page number (spread them out logically across the page count of ${pageCount} pages).
-      Use the store-clauses tool to save them. Return a summary of what you extracted.
+
+      Output ONLY a valid JSON array of objects. Do not wrap in markdown or backticks.
+      Each object in the array MUST have the following structure:
+      - category: string
+      - rawText: string
+      - pageNumber: number
     `;
 
     const agentRes = await documentProcessingAgent.generate(prompt);
+    
+    let clauses: any[] = [];
+    try {
+      const cleanJson = agentRes.text.replace(/```json/g, '').replace(/```/g, '').trim();
+      clauses = JSON.parse(cleanJson);
+    } catch (e) {
+      console.warn('Failed to parse clauses JSON from agent, falling back:', e);
+      clauses = [{
+        category: 'General',
+        rawText: rawText.substring(0, 1000) + '...',
+        pageNumber: 1
+      }];
+    }
+
+    const dbService = DbService.getInstance();
+    const clausesCollection = await dbService.getCollection('clauses');
+    const qdrantService = QdrantService.getInstance();
+
+    const points: any[] = [];
+    for (const clause of clauses) {
+      const mongoRes = await clausesCollection.insertOne({
+        org_id: orgId,
+        matter_id: new ObjectId(matterId),
+        document_id: new ObjectId(documentId),
+        category: clause.category || 'General',
+        raw_text: clause.rawText || '',
+        page_number: typeof clause.pageNumber === 'number' ? clause.pageNumber : 1,
+        created_at: new Date(),
+      });
+
+      const vector = await getEmbedding(clause.rawText || '');
+      const clauseIdStr = mongoRes.insertedId.toString();
+
+      points.push({
+        id: objectIdToUuid(clauseIdStr),
+        vector,
+        payload: {
+          org_id: orgId,
+          matter_id: matterId,
+          document_id: documentId,
+          clause_id: clauseIdStr,
+          clause_type: clause.category || 'General',
+          page_number: typeof clause.pageNumber === 'number' ? clause.pageNumber : 1,
+          raw_text: clause.rawText || '',
+        },
+      });
+    }
+
+    if (points.length > 0) {
+      await qdrantService.upsertPoints('legal_documents', points);
+    }
+
     return {
-      agentSummary: agentRes.text,
+      agentSummary: `Successfully extracted and indexed ${clauses.length} clauses semantically into Qdrant database.`,
     };
   },
 });

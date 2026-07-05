@@ -18,7 +18,7 @@ router.post('/:matterId/documents', authMiddleware, async (req: AuthenticatedReq
   const fileName = req.query.name as string || 'document.pdf';
   const pdfBuffer = req.body;
 
-  if (!pdfBuffer || pdfBuffer.length === 0) {
+  if (!Buffer.isBuffer(pdfBuffer) || pdfBuffer.length === 0) {
     return res.status(400).json({ error: 'Raw PDF binary payload is required.' });
   }
 
@@ -121,6 +121,16 @@ router.get('/:matterId/documents', authMiddleware, async (req: AuthenticatedRequ
   const orgId = req.user?.orgId || 'org_default_firm';
 
   try {
+    const mattersCollection = await dbService.getCollection('matters');
+    const matter = await mattersCollection.findOne({
+      _id: new ObjectId(matterId),
+      org_id: orgId,
+    });
+
+    if (!matter) {
+      return res.status(404).json({ error: 'Matter not found or access denied.' });
+    }
+
     const docsCollection = await dbService.getCollection('documents');
     const documents = await docsCollection.find({
       matter_id: new ObjectId(matterId),

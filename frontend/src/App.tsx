@@ -97,9 +97,10 @@ export default function App() {
 
   // API Fetch Wrapper supporting Authorization Header
   const apiFetch = async (url: string, options: RequestInit = {}) => {
+    const currentToken = localStorage.getItem('lawyeros_token');
     const headers = {
       ...options.headers,
-      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      ...(currentToken ? { 'Authorization': `Bearer ${currentToken}` } : {}),
     };
     const res = await fetch(url, { ...options, headers });
     if (res.status === 401) {

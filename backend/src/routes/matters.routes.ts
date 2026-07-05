@@ -76,4 +76,61 @@ router.get('/:matterId', authMiddleware, async (req: AuthenticatedRequest, res: 
   }
 });
 
+// 4. Get all clauses in a Matter
+router.get('/:matterId/clauses', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const { matterId } = req.params;
+  const orgId = req.user?.orgId || 'org_default_firm';
+
+  try {
+    const clausesCollection = await dbService.getCollection('clauses');
+    const clauses = await clausesCollection.find({
+      matter_id: new ObjectId(matterId),
+      org_id: orgId,
+    }).toArray();
+
+    return res.json({ clauses });
+  } catch (error: any) {
+    console.error('Error fetching clauses:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// 5. Get all obligations in a Matter
+router.get('/:matterId/obligations', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const { matterId } = req.params;
+  const orgId = req.user?.orgId || 'org_default_firm';
+
+  try {
+    const obligationsCollection = await dbService.getCollection('obligations');
+    const obligations = await obligationsCollection.find({
+      matter_id: new ObjectId(matterId),
+      org_id: orgId,
+    }).toArray();
+
+    return res.json({ obligations });
+  } catch (error: any) {
+    console.error('Error fetching obligations:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// 6. Get all risks in a Matter
+router.get('/:matterId/risks', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const { matterId } = req.params;
+  const orgId = req.user?.orgId || 'org_default_firm';
+
+  try {
+    const risksCollection = await dbService.getCollection('risks');
+    const risks = await risksCollection.find({
+      matter_id: new ObjectId(matterId),
+      org_id: orgId,
+    }).toArray();
+
+    return res.json({ risks });
+  } catch (error: any) {
+    console.error('Error fetching risks:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;
