@@ -1,0 +1,492 @@
+flowchart TD
+
+%% =====================================================
+%% USER ENTRY
+%% =====================================================
+
+A[Lawyer Creates Matter]
+A --> B[Matter Created]
+
+B --> B1[(PostgreSQL<br/>Matter Table)]
+
+B --> C[Upload Legal Document]
+
+%% =====================================================
+%% PHASE 1
+%% =====================================================
+
+subgraph P1[PHASE 1 - DOCUMENT UNDERSTANDING]
+C --> D[Store Original PDF]
+
+D --> D1[(AWS S3<br/>Original Documents)]
+
+D --> E[Create Document Record]
+
+E --> E1[(PostgreSQL<br/>Document Table)]
+
+E --> F[Text Extraction]
+
+F --> G[Page Mapping]
+
+G --> H[Raw Text Storage]
+
+H --> H1[(Raw Text Storage)]
+
+H --> I[Clause Segmentation]
+
+I --> J[Clause Objects]
+
+J --> J1[(Clause Table)]
+
+J --> K[Party Extraction]
+
+K --> K1[(Party Table)]
+
+J --> L[Obligation Extraction]
+
+L --> L1[(Obligation Table)]
+
+J --> M[Legal Event Extraction]
+
+M --> M1[(LegalEvent Table)]
+
+J --> N[Metadata Extraction]
+
+N --> N1[(Document Metadata)]
+
+end
+
+%% =====================================================
+%% PHASE 2
+%% =====================================================
+
+subgraph P2[PHASE 2 - LEGAL MATTER DIGITAL TWIN]
+
+O[Additional Documents Uploaded]
+
+O --> P[Amendments]
+
+O --> Q[Legal Notices]
+
+O --> R[Court Filings]
+
+O --> S[Emails]
+
+P --> T[Merge Into Existing Matter]
+Q --> T
+R --> T
+S --> T
+
+T --> U[Living Matter State]
+
+U --> U1[(Matter Twin)]
+
+end
+
+%% =====================================================
+%% PHASE 3
+%% =====================================================
+
+subgraph P3[PHASE 3 - TIMELINE INTELLIGENCE]
+
+L1 --> V[Timeline Agent]
+
+M1 --> V
+
+V --> W[Extract Deadlines]
+
+V --> X[Extract Renewals]
+
+V --> Y[Extract Expirations]
+
+V --> Z[Extract Notice Periods]
+
+V --> AA[Extract Payment Schedules]
+
+W --> AB[Timeline Report]
+X --> AB
+Y --> AB
+Z --> AB
+AA --> AB
+
+end
+
+%% =====================================================
+%% PHASE 4
+%% =====================================================
+
+subgraph P4[PHASE 4 - RISK INTELLIGENCE]
+
+J1 --> AC[Risk Engine]
+
+L1 --> AC
+
+AC --> AD[Risk Classification]
+
+AC --> AE[Risk Explanation]
+
+AC --> AF[Business Impact Analysis]
+
+AD --> AG[(Risk Table)]
+AE --> AG
+AF --> AG
+
+end
+
+%% =====================================================
+%% PHASE 5
+%% =====================================================
+
+subgraph P5[PHASE 5 - CLAUSE BENCHMARKING]
+
+J1 --> AH[Benchmark Engine]
+
+%% FIX: benchmark engine must read its own stored library, not just write to it
+AT --> AH
+
+AH --> AI[Compare Against Market Standards]
+
+AH --> AJ[Compare Against Internal Standards]
+
+AH --> AK[Find Similar Clauses]
+
+AI --> AL[Benchmark Report]
+AJ --> AL
+AK --> AL
+
+end
+
+%% =====================================================
+%% PHASE 6
+%% =====================================================
+
+subgraph P6[PHASE 6 - INSTITUTIONAL MEMORY]
+
+J1 --> AM[Embedding Pipeline]
+
+AG --> AM
+
+AB --> AM
+
+U1 --> AM
+
+%% FIX: benchmark reports were never persisted into institutional memory
+AL --> AM
+
+AM --> AN[Generate Embeddings]
+
+AN --> AO[(Qdrant)]
+
+AO --> AP[Legal Documents Collection]
+
+AO --> AQ[Matter Memory Collection]
+
+AO --> AR[Risk Intelligence Collection]
+
+AO --> AS[Lawyer Notes Collection]
+
+AO --> AT[Benchmark Clause Collection]
+
+end
+
+%% =====================================================
+%% PHASE 7
+%% =====================================================
+
+subgraph P7[PHASE 7 - LEGAL KNOWLEDGE FABRIC]
+
+B1 --> AU[Graph Builder]
+
+E1 --> AU
+
+J1 --> AU
+
+K1 --> AU
+
+L1 --> AU
+
+M1 --> AU
+
+AG --> AU
+
+%% FIX: Timeline Graph and Citation Graph had no actual data source feeding the builder
+AB --> AU
+
+AL --> AU
+
+AU --> AV[Matter Graph]
+
+AU --> AW[Clause Graph]
+
+AU --> AX[Risk Graph]
+
+AU --> AY[Timeline Graph]
+
+AU --> AZ[Citation Graph]
+
+AV --> BA[(Knowledge Graph)]
+AW --> BA
+AX --> BA
+AY --> BA
+AZ --> BA
+
+end
+
+%% =====================================================
+%% PHASE 8
+%% =====================================================
+
+subgraph P8[PHASE 8 - GRAPH RAG Q&A]
+
+BB[Lawyer Question]
+
+BB --> BC[Legal QA Agent]
+
+BC --> BD[Graph Retrieval]
+
+BC --> BE[Semantic Retrieval]
+
+BD --> BA
+
+BE --> AO
+
+BA --> BF[Evidence Assembly]
+
+AO --> BF
+
+BF --> BG[Grounded Legal Answer]
+
+end
+
+%% =====================================================
+%% PHASE 9
+%% =====================================================
+
+subgraph P9[PHASE 9 - CITATION VERIFICATION]
+
+BG --> BH[Citation Checker]
+
+%% FIX: named as its own connector per architecture spec, queried before internal reliance
+subgraph EXT[External Legal Source Connector]
+BI[Case Law Sources]
+BJ[Legal Databases]
+BK[Statutory Sources]
+end
+
+BH --> BI
+
+BH --> BJ
+
+BH --> BK
+
+BI --> BL[Verified Citation]
+
+BJ --> BL
+
+BK --> BL
+
+%% FIX: verified citations must feed back into the Citation Graph for future reuse
+BL -.->|"updates"| AU
+
+end
+
+%% =====================================================
+%% PHASE 10
+%% =====================================================
+
+subgraph P10[PHASE 10 - RESEARCH AGENT]
+
+BM[Research Request]
+
+BM --> BN[Research Agent]
+
+BN --> BA
+
+BN --> AO
+
+BN --> BO[External Legal Sources]
+
+BO --> BP[Precedents]
+
+BO --> BQ[Statutes]
+
+BO --> BR[Case Law]
+
+BP --> BS[Research Memo]
+
+BQ --> BS
+
+BR --> BS
+
+end
+
+%% =====================================================
+%% PHASE 11
+%% =====================================================
+
+subgraph P11[PHASE 11 - DRAFTING AGENT]
+
+BT[Draft Request]
+
+BT --> BU[Drafting Agent]
+
+BU --> BA
+
+BU --> AO
+
+BU --> BS
+
+BU --> BV[Generate Draft]
+
+BV --> BW[Legal Notice]
+
+BV --> BX[Review Memo]
+
+BV --> BY[Client Summary]
+
+BV --> BZ[Contract Draft]
+
+end
+
+%% =====================================================
+%% PHASE 12
+%% =====================================================
+
+subgraph P12[PHASE 12 - EXPLAINABILITY]
+
+CA[Explainability Engine]
+
+BG --> CA
+
+BS --> CA
+
+BV --> CA
+
+%% FIX: Risk and Benchmark outputs were never gated by Explainability at all
+AG --> CA
+
+AL --> CA
+
+CA --> CB[Source Evidence]
+
+CA --> CC[Reasoning Trace]
+
+CA --> CD[Confidence Score]
+
+end
+
+%% =====================================================
+%% PHASE 13
+%% =====================================================
+
+subgraph P13[PHASE 13 - ENKRYPT TRUST LAYER]
+
+CE[Trust Layer]
+
+BL --> CE
+
+CB --> CE
+
+CC --> CE
+
+CD --> CE
+
+CE --> CF[Hallucination Checks]
+
+CE --> CG[Citation Integrity]
+
+CE --> CH[Evidence Validation]
+
+CE --> CI[Output Trust Score]
+
+end
+
+%% =====================================================
+%% PHASE 14
+%% =====================================================
+
+subgraph P14[PHASE 14 - HUMAN REVIEW]
+
+CJ[Human Review Queue]
+
+CI --> CJ
+
+CJ --> CK[Approve]
+
+CJ --> CL[Reject]
+
+CJ --> CM[Request Revision]
+
+end
+
+%% =====================================================
+%% PHASE 15
+%% =====================================================
+
+subgraph P15[PHASE 15 - NOTIFICATIONS]
+
+AB --> CN[Notification Engine]
+
+AG --> CN
+
+CJ --> CN
+
+CN --> CO[Upcoming Deadlines]
+
+CN --> CP[Expiring Contracts]
+
+CN --> CQ[Pending Reviews]
+
+CN --> CR[Risk Alerts]
+
+%% FIX: alerts had no actual delivery mechanism
+CO --> DZ[Email / In-App Delivery]
+CP --> DZ
+CQ --> DZ
+CR --> DZ
+
+end
+
+%% =====================================================
+%% PHASE 16
+%% =====================================================
+
+subgraph P16[PHASE 16 - ENTERPRISE]
+
+CS[Authentication]
+
+CT[RBAC]
+
+CU[Audit Logs]
+
+CV[Encryption]
+
+CW[Compliance]
+
+CX[Tenant Isolation]
+
+%% FIX: compliance reporting should read from the audit trail, not float independently
+CU --> CW
+
+end
+
+%% =====================================================
+%% CROSS-CUTTING ENFORCEMENT
+%% FIX: Phase 16 was a fully disconnected island (0 in/out edges).
+%% These dashed edges show it applies across the system, not bolted on at the end.
+%% =====================================================
+
+A -.->|"authenticated via"| CS
+A -.->|"authorized via"| CT
+
+B1 -.->|"tenant-scoped"| CX
+D1 -.->|"tenant-scoped"| CX
+AO -.->|"tenant-scoped"| CX
+BA -.->|"tenant-scoped"| CX
+
+D1 -.->|"encrypted"| CV
+AO -.->|"encrypted"| CV
+
+B1 -.->|"logged"| CU
+J1 -.->|"logged"| CU
+CJ -.->|"logged"| CU

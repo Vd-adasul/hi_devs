@@ -1,0 +1,24 @@
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+
+# Environment files (CRITICAL: Do NOT push keys to GitHub)
+.env
+.env.*
+keys.txt
+important.txt
+
+# System/IDE config and temp files
+.gemini/
+.agents/
+.vscode/
+.idea/
+.DS_Store
+*.log
+Thumbs.db
