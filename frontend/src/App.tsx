@@ -61,9 +61,6 @@ interface Message {
 }
 
 export default function App() {
-  // Organisation Context (Simulating auth tenancy)
-  const orgId = 'org_default_firm';
-  
   // State variables
   const [matters, setMatters] = useState<Matter[]>([]);
   const [selectedMatter, setSelectedMatter] = useState<Matter | null>(null);
@@ -376,7 +373,7 @@ export default function App() {
                       }}
                       onClick={() => setSelectedDoc(d)}
                     >
-                      <div style={{ fontSize: '13px', fontWeight: 600, truncate: true }}>{d.name}</div>
+                      <div style={{ fontSize: '13px', fontWeight: 600, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{d.name}</div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
                         <span>{(d.file_size / 1024).toFixed(1)} KB</span>
                         <span>{d.page_count} pages</span>
