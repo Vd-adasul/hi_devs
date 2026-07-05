@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { DbService } from './services/db.service.js';
 import { QdrantService } from './services/qdrant.service.js';
+import authRouter from './routes/auth.routes.js';
 import mattersRouter from './routes/matters.routes.js';
 import documentsRouter from './routes/documents.routes.js';
 import qaRouter from './routes/qa.routes.js';
@@ -22,6 +23,7 @@ app.use('/api/v1/matters/:matterId/documents', express.raw({ type: 'application/
 app.use(express.json());
 
 // Routes
+app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/matters', mattersRouter);
 app.use('/api/v1/matters', documentsRouter);
 app.use('/api/v1/matters', qaRouter);

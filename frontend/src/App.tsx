@@ -61,6 +61,14 @@ interface Message {
 }
 
 export default function App() {
+  // Authentication states
+  const [token, setToken] = useState<string | null>(localStorage.getItem('lawyeros_token'));
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+
   // State variables
   const [matters, setMatters] = useState<Matter[]>([]);
   const [selectedMatter, setSelectedMatter] = useState<Matter | null>(null);
@@ -85,14 +93,31 @@ export default function App() {
   // File Input Ref
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch Matters on mount
+  // API Fetch Wrapper supporting Authorization Header
+  const apiFetch = async (url: string, options: RequestInit = {}) => {
+    const headers = {
+      ...options.headers,
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    };
+    const res = await fetch(url, { ...options, headers });
+    if (res.status === 401) {
+      localStorage.removeItem('lawyeros_token');
+      setToken(null);
+      setSelectedMatter(null);
+    }
+    return res;
+  };
+
+  // Fetch Matters on mount or when token updates
   useEffect(() => {
-    fetchMatters();
-  }, []);
+    if (token) {
+      fetchMatters();
+    }
+  }, [token]);
 
   // Fetch Documents and Matter State when Matter selection changes
   useEffect(() => {
-    if (selectedMatter) {
+    if (selectedMatter && token) {
       fetchDocuments(selectedMatter._id);
       fetchMatterDetails(selectedMatter._id);
     } else {
@@ -102,11 +127,46 @@ export default function App() {
       setObligations([]);
       setRisks([]);
     }
-  }, [selectedMatter]);
+  }, [selectedMatter, token]);
+
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail || !authPassword) return;
+    setAuthError('');
+    setAuthLoading(true);
+
+    try {
+      const endpoint = authMode === 'login' ? '/auth/login' : '/auth/register';
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: authEmail, password: authPassword }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Authentication failed');
+      }
+
+      if (authMode === 'login') {
+        localStorage.setItem('lawyeros_token', data.token);
+        setToken(data.token);
+        setAuthEmail('');
+        setAuthPassword('');
+      } else {
+        setAuthMode('login');
+        setAuthError('Account created successfully. Please log in.');
+      }
+    } catch (err: any) {
+      setAuthError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
 
   const fetchMatters = async () => {
     try {
-      const res = await fetch(`${API_BASE}/matters`);
+      const res = await apiFetch(`${API_BASE}/matters`);
       const data = await res.json();
       if (data.matters) setMatters(data.matters);
     } catch (err) {
@@ -116,7 +176,7 @@ export default function App() {
 
   const fetchDocuments = async (matterId: string) => {
     try {
-      const res = await fetch(`${API_BASE}/matters/${matterId}/documents`);
+      const res = await apiFetch(`${API_BASE}/matters/${matterId}/documents`);
       const data = await res.json();
       if (data.documents) setDocuments(data.documents);
     } catch (err) {
@@ -127,21 +187,21 @@ export default function App() {
   const fetchMatterDetails = async (matterId: string) => {
     try {
       // Fetch Clauses
-      const clausesRes = await fetch(`${API_BASE}/matters/${matterId}/clauses`);
+      const clausesRes = await apiFetch(`${API_BASE}/matters/${matterId}/clauses`);
       if (clausesRes.ok) {
         const clausesData = await clausesRes.json();
         setClauses(clausesData.clauses || []);
       }
 
       // Fetch Obligations
-      const obligationsRes = await fetch(`${API_BASE}/matters/${matterId}/obligations`);
+      const obligationsRes = await apiFetch(`${API_BASE}/matters/${matterId}/obligations`);
       if (obligationsRes.ok) {
         const obligationsData = await obligationsRes.json();
         setObligations(obligationsData.obligations || []);
       }
 
       // Fetch Risks
-      const risksRes = await fetch(`${API_BASE}/matters/${matterId}/risks`);
+      const risksRes = await apiFetch(`${API_BASE}/matters/${matterId}/risks`);
       if (risksRes.ok) {
         const risksData = await risksRes.json();
         setRisks(risksData.risks || []);
@@ -156,7 +216,7 @@ export default function App() {
     if (!newMatterName || !newClientName) return;
 
     try {
-      const res = await fetch(`${API_BASE}/matters`, {
+      const res = await apiFetch(`${API_BASE}/matters`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newMatterName, client_name: newClientName }),
@@ -166,7 +226,6 @@ export default function App() {
         setNewMatterName('');
         setNewClientName('');
         fetchMatters();
-        // Select the newly created matter
         if (data.matter) setSelectedMatter(data.matter);
       }
     } catch (err) {
@@ -186,14 +245,11 @@ export default function App() {
     setProcessingLog('Uploading PDF binary contents to AWS S3 storage...');
 
     try {
-      // Read file buffer
       const fileBuffer = await file.arrayBuffer();
-
-      // Trigger upload and Mastra Agent processing
       setProcessingLog('Extracting PDF text content & triggering Mastra Agent parsing...');
       const uploadUrl = `${API_BASE}/matters/${selectedMatter._id}/documents?name=${encodeURIComponent(file.name)}`;
       
-      const res = await fetch(uploadUrl, {
+      const res = await apiFetch(uploadUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/pdf' },
         body: fileBuffer,
@@ -213,7 +269,6 @@ export default function App() {
       setProcessingLog(`Upload exception: ${err.message}`);
     } finally {
       setUploading(false);
-      // Reset input
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -234,7 +289,7 @@ export default function App() {
     setQaLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/matters/${selectedMatter._id}/qa`, {
+      const res = await apiFetch(`${API_BASE}/matters/${selectedMatter._id}/qa`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: currentQuery }),
@@ -285,19 +340,108 @@ export default function App() {
             Legal Document Intelligence & Matter Digital Twin
           </p>
         </div>
-        {selectedMatter && (
-          <div className="glass-panel" style={{ padding: '10px 20px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <span style={{ color: 'var(--text-secondary)' }}>Selected Matter:</span>
-            <strong style={{ color: 'var(--accent-color)' }}>{selectedMatter.name}</strong>
-            <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: '12px', borderRadius: '6px' }} onClick={() => setSelectedMatter(null)}>
-              Change
+        
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          {selectedMatter && (
+            <div className="glass-panel" style={{ padding: '10px 20px', borderRadius: '10px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <span style={{ color: 'var(--text-secondary)' }}>Selected Matter:</span>
+              <strong style={{ color: 'var(--accent-color)' }}>{selectedMatter.name}</strong>
+              <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: '12px', borderRadius: '6px' }} onClick={() => setSelectedMatter(null)}>
+                Change
+              </button>
+            </div>
+          )}
+
+          {token && (
+            <button
+              className="btn-secondary"
+              style={{ padding: '10px 20px', borderRadius: '10px', border: '1px solid var(--danger)', color: 'var(--danger)' }}
+              onClick={() => {
+                localStorage.removeItem('lawyeros_token');
+                setToken(null);
+                setSelectedMatter(null);
+              }}
+            >
+              Logout
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </header>
 
       {/* Primary Dashboard Grid Layout */}
-      {!selectedMatter ? (
+      {!token ? (
+        <div style={{ maxWidth: '450px', margin: '80px auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+            <div style={{ textAlign: 'center' }}>
+              <h2 style={{ fontSize: '24px', background: 'var(--accent-gradient)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', display: 'inline-block' }}>
+                {authMode === 'login' ? 'Welcome to LawyerOS' : 'Create Lawyer Account'}
+              </h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginTop: '6px' }}>
+                {authMode === 'login' ? 'Sign in to access your Legal Matter Twins' : 'Register your credentials to secure your workspace'}
+              </p>
+            </div>
+
+            {authError && (
+              <div style={{
+                padding: '12px',
+                borderRadius: '8px',
+                background: authError.includes('successful') ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                color: authError.includes('successful') ? 'var(--success)' : 'var(--danger)',
+                fontSize: '13px',
+                textAlign: 'center',
+                border: authError.includes('successful') ? '1px solid var(--success)' : '1px solid var(--danger)',
+              }}>
+                {authError}
+              </div>
+            )}
+
+            <form onSubmit={handleAuthSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Email Address</label>
+                <input
+                  type="email"
+                  className="input-field"
+                  placeholder="name@firm.com"
+                  value={authEmail}
+                  onChange={(e) => setAuthEmail(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <label style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>Password</label>
+                <input
+                  type="password"
+                  className="input-field"
+                  placeholder="••••••••"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  required
+                />
+              </div>
+
+              <button type="submit" className="btn-primary" style={{ justifyContent: 'center', marginTop: '10px' }} disabled={authLoading}>
+                {authLoading ? 'Verifying...' : authMode === 'login' ? 'Sign In' : 'Register Account'}
+              </button>
+            </form>
+
+            <div style={{ textAlign: 'center', fontSize: '13px' }}>
+              <span style={{ color: 'var(--text-secondary)' }}>
+                {authMode === 'login' ? "Don't have an account? " : "Already have an account? "}
+              </span>
+              <button
+                style={{ background: 'none', border: 'none', color: 'var(--accent-color)', cursor: 'pointer', fontWeight: 600 }}
+                onClick={() => {
+                  setAuthMode(authMode === 'login' ? 'register' : 'login');
+                  setAuthError('');
+                }}
+              >
+                {authMode === 'login' ? 'Register here' : 'Log in here'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : !selectedMatter ? (
         <div style={{ maxWidth: '600px', margin: '60px auto w-full', display: 'flex', flexDirection: 'column', gap: '24px' }}>
           {/* Matter Selection Screen */}
           <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>

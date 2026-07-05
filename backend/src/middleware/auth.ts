@@ -14,22 +14,13 @@ export interface AuthenticatedRequest extends Request {
 export function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
 
-  // Fallback default organization and user for testing convenience
-  const defaultUser = {
-    userId: 'usr_default_lawyer',
-    orgId: 'org_default_firm',
-    role: 'lawyer',
-  };
-
   if (!authHeader) {
-    req.user = defaultUser;
-    return next();
+    return res.status(401).json({ error: 'Access denied. Authorization token is required.' });
   }
 
   const token = authHeader.split(' ')[1];
   if (!token) {
-    req.user = defaultUser;
-    return next();
+    return res.status(401).json({ error: 'Access denied. Invalid token format.' });
   }
 
   try {
@@ -41,8 +32,6 @@ export function authMiddleware(req: AuthenticatedRequest, res: Response, next: N
     };
     next();
   } catch (error) {
-    console.warn('Invalid token, falling back to default test user credentials');
-    req.user = defaultUser;
-    next();
+    return res.status(401).json({ error: 'Access denied. Invalid or expired token.' });
   }
 }
