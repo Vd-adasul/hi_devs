@@ -94,11 +94,23 @@ export const citationAgent = new Agent({
   tools: { verifyCitationTool },
 });
 
+import { z } from 'zod';
+
 // 7. Workflow Steps Definitions
 const extractClausesStep = createStep({
   id: 'extract-clauses-step',
-  execute: async ({ context }) => {
-    const triggerData = context?.triggerData as any;
+  inputSchema: z.object({
+    orgId: z.string(),
+    matterId: z.string(),
+    documentId: z.string(),
+    rawText: z.string(),
+    pageCount: z.number(),
+  }),
+  outputSchema: z.object({
+    agentSummary: z.string(),
+  }),
+  execute: async ({ getInitData }) => {
+    const triggerData = getInitData<any>();
     const { orgId, matterId, documentId, rawText, pageCount } = triggerData;
 
     const prompt = `
@@ -127,8 +139,12 @@ const extractClausesStep = createStep({
 
 const generateTimelineStep = createStep({
   id: 'generate-timeline-step',
-  execute: async ({ context }) => {
-    const triggerData = context?.triggerData as any;
+  inputSchema: z.any(),
+  outputSchema: z.object({
+    obligationCount: z.number(),
+  }),
+  execute: async ({ getInitData }) => {
+    const triggerData = getInitData<any>();
     const { orgId, matterId, documentId } = triggerData;
 
     const dbService = DbService.getInstance();
@@ -189,8 +205,12 @@ const generateTimelineStep = createStep({
 
 const analyzeRisksStep = createStep({
   id: 'analyze-risks-step',
-  execute: async ({ context }) => {
-    const triggerData = context?.triggerData as any;
+  inputSchema: z.any(),
+  outputSchema: z.object({
+    riskCount: z.number(),
+  }),
+  execute: async ({ getInitData }) => {
+    const triggerData = getInitData<any>();
     const { orgId, matterId, documentId } = triggerData;
 
     const dbService = DbService.getInstance();
@@ -252,6 +272,14 @@ const analyzeRisksStep = createStep({
 // 8. Workflow Composition
 export const documentWorkflow = new Workflow({
   id: 'document-processing-workflow',
+  inputSchema: z.object({
+    orgId: z.string(),
+    matterId: z.string(),
+    documentId: z.string(),
+    rawText: z.string(),
+    pageCount: z.number(),
+  }),
+  outputSchema: z.any(),
 });
 
 documentWorkflow

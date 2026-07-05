@@ -79,7 +79,11 @@ router.post('/:matterId/documents', authMiddleware, async (req: AuthenticatedReq
       },
     });
     
-    const agentSummary = (workflowRes.result as any)?.agentSummary || 'Structured extraction successfully finished via Mastra Workflow pipeline.';
+    if (workflowRes.status === 'failed') {
+      throw new Error((workflowRes as any).error?.message || 'Workflow execution failed');
+    }
+    
+    const agentSummary = (workflowRes as any).result?.agentSummary || 'Structured extraction successfully finished via Mastra Workflow pipeline.';
 
     // Update document status in MongoDB
     await docsCollection.updateOne(
