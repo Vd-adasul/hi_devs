@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// Setup Base API Endpoint
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
+let API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000/api/v1';
+if (API_BASE && !API_BASE.endsWith('/api/v1')) {
+  API_BASE = API_BASE.replace(/\/$/, '') + '/api/v1';
+}
 
 interface Matter {
   _id: string;
