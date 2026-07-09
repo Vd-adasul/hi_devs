@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import axios from 'axios'
 import type { User } from '@clm/types'
+import { api } from '@/lib/api'
 
 interface AuthState {
   user: User | null
@@ -25,7 +25,7 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
 
       login: async (email, password) => {
-        const { data } = await axios.post('/api/v1/auth/login', { email, password })
+        const { data } = await api.post('/auth/login', { email, password })
         set({
           user: data.user,
           accessToken: data.accessToken,
@@ -35,7 +35,7 @@ export const useAuthStore = create<AuthState>()(
       },
 
       register: async (body) => {
-        const { data } = await axios.post('/api/v1/auth/register', {
+        const { data } = await api.post('/auth/register', {
           ...body,
           orgName: body.orgName,
         })
@@ -50,16 +50,14 @@ export const useAuthStore = create<AuthState>()(
       refresh: async () => {
         const { refreshToken } = get()
         if (!refreshToken) throw new Error('No refresh token')
-        const { data } = await axios.post('/api/v1/auth/refresh', { refreshToken })
+        const { data } = await api.post('/auth/refresh', { refreshToken })
         set({ accessToken: data.accessToken, refreshToken: data.refreshToken })
       },
 
       logout: () => {
         const { accessToken } = get()
         if (accessToken) {
-          axios.post('/api/v1/auth/logout', {}, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          }).catch(() => {})
+          api.post('/auth/logout', {}).catch(() => {})
         }
         set({ user: null, accessToken: null, refreshToken: null, isAuthenticated: false })
       },
