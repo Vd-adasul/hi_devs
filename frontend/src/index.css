@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /* LawyerOS Glassmorphism Theme System */
 :root {
   --bg-color: #0b0f19;
