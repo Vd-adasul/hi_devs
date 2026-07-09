@@ -26,9 +26,13 @@ export function useRoles() {
   })
 }
 
+// 🔴 [blocking] Stable fallback — inline `[] ` creates a new reference every
+// render, causing Zustand to trigger an infinite re-render loop (React #185).
+const EMPTY_ROLES: string[] = []
+
 // Check if current user has a specific permission
 export function usePermission(action: string, resource: string): boolean {
-  const userRoleNames = useAuthStore(s => s.user?.roles ?? []) as string[]
+  const userRoleNames = useAuthStore(s => s.user?.roles as string[] ?? EMPTY_ROLES)
   const { data: roleData } = useRoles()
 
   // ADMIN always has full access — check role name directly (no API dependency)
