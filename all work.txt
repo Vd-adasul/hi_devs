@@ -1,0 +1,207 @@
+Based on your implementation plan, here is the complete feature checklist grouped by module. 
+
+## Module 1 — Authentication & Workspace
+
+1. User Registration
+2. User Login
+3. JWT Authentication
+4. Multi-Tenant Organizations
+5. Subscription Tiers
+6. Role-Based Access Control (RBAC)
+7. Workspace Invites
+8. Invite Acceptance
+9. Team Management
+10. Token Refresh
+
+---
+
+## Module 2 — Document Intelligence
+
+11. Matter Management
+12. Matter Twin (Living State)
+13. PDF Upload
+14. PDF Text Extraction
+15. OCR for Scanned PDFs
+16. Interactive PDF Viewer
+17. Dual View (Original / Styled)
+18. Inline Highlights
+19. Risk Highlighting
+20. Clause Extraction
+21. Party Extraction
+22. Obligation Extraction
+23. Timeline Extraction
+24. Risk Analysis
+25. Document Versioning
+26. Version Comparison
+27. Matter Conflict Detection
+28. Matter Auto-Merge
+29. Living State Viewer
+30. Interactive Document Q&A (RAG)
+
+---
+
+## Module 3 — Clause Intelligence & Playbook
+
+31. Clause Benchmarking
+32. Playbook Management
+33. Playbook Compliance Audit
+34. Clause Compliance Status
+35. Redline Suggestions
+36. Contract Comments
+37. Threaded Discussions
+38. Comment Resolution
+
+---
+
+## Module 4 — Contract Lifecycle Management
+
+39. Approval Workflows
+40. Multi-Stage Approvals
+41. Approval Queue
+42. Approval Delegation
+43. Human Review Queue
+44. Obligation Dashboard
+45. Obligation Completion
+46. Evidence Upload
+47. Counterparty Directory
+48. Counterparty Memory
+49. Diligence Rooms
+50. External Diligence Portal
+51. Signature Requests
+52. OTP E-Signatures
+53. External Signer Portal
+
+---
+
+## Module 5 — Multi-Agent Workflows
+
+54. Document Processing Workflow
+55. Matter Twin Workflow
+56. Research Workflow
+57. Redline Workflow
+58. Negotiation Workflow
+59. Playbook Audit Workflow
+
+---
+
+## Module 6 — AI Negotiation Engine
+
+60. Negotiation Sessions
+61. Negotiation Timeline
+62. Counterparty Portal
+63. Offer Submission
+64. Counter Offer Submission
+65. AI Negotiation Recommendations
+66. ZOPA Estimation
+67. Concession Strategy
+68. Counterparty Memory Integration
+69. Accept / Reject Workflow
+
+---
+
+## Module 7 — Knowledge Graph & Research
+
+70. Neo4j Knowledge Graph
+71. Matter Graph
+72. Document Graph
+73. Clause Graph
+74. Party Graph
+75. Citation Graph
+76. Obligation Graph
+77. Graph Visualization
+78. GraphRAG
+79. Hybrid Retrieval (Vector + Graph)
+80. External Citation Verification (Indian Kanoon)
+81. Research Agent
+82. Research Memo Generation
+83. Drafting Agent
+84. Clause Drafting
+85. Graph API
+
+---
+
+## Module 8 — Notifications & Alerts
+
+86. Email Notifications
+87. Workspace Invite Emails
+88. Approval Emails
+89. Deadline Alerts
+90. Negotiation Alerts
+91. Signature Requests
+92. Obligation Alerts
+93. Diligence Access Emails
+94. Renewal Alerts
+95. Scheduled Cron Jobs
+96. Weekly Digest
+
+---
+
+## Module 9 — Admin & Observability
+
+97. Bring Your Own API Keys (BYOK)
+98. LLM Provider Configuration
+99. Model Selection Per Agent
+100. Developer Webhooks
+101. Developer API Keys
+102. Langfuse Integration
+103. Trace Viewer
+104. Explainability Engine
+105. Confidence Scores
+106. Reasoning Trace
+107. Automatic Human Review Gating
+
+---
+
+## Module 10 — Voice Interface
+
+108. Speech-to-Text (STT)
+109. Text-to-Speech (TTS)
+110. Voice Chat Input
+111. Voice Output for AI Responses
+112. Voice Research Queries
+113. Voice Negotiation Input
+114. Voice Contract Q&A
+115. Browser-Native Voice Support
+
+---
+
+## Frontend / UI Features
+
+116. Dashboard
+117. App Shell
+118. Sidebar Navigation
+119. Header
+120. Matter Detail Page
+121. Contract Detail Page
+122. Negotiation Detail Page
+123. Research Page
+124. Knowledge Graph Page
+125. Analytics Dashboard
+126. Playbook Page
+127. Counterparty Pages
+128. Diligence Room Pages
+129. Review Queue Page
+130. Signature Pages
+131. Settings Page
+132. External Portal
+133. Negotiation Portal
+134. Signer Portal
+
+---
+
+## Infrastructure & Services
+
+135. Neo4j Integration
+136. Qdrant Integration
+137. Indian Kanoon Integration
+138. Resend Email Integration
+139. Langfuse Observability
+140. OCR Service
+141. PDF Highlight Service
+142. Explainability Service
+143. Email Service
+144. Cron Service
+145. Matter Twin Service
+146. Citation Verification Service
+
+**Total planned capabilities:** **146** distinct implementation items/features spanning authentication, document intelligence, AI agents, GraphRAG, negotiation, lifecycle management, research, administration, voice, and infrastructure. 

@@ -8,6 +8,7 @@ import { objectIdToUuid } from '../utils/uuid.js';
 import { ObjectId } from 'mongodb';
 import { storeClausesTool, searchQdrantTool, verifyCitationTool } from './tools.js';
 import dotenv from 'dotenv';
+import { z } from 'zod';
 dotenv.config({ override: true });
 
 // Ensure Google API Key is set for Mastra model gateway
@@ -97,9 +98,81 @@ export const citationAgent = new Agent({
   tools: { verifyCitationTool },
 });
 
-import { z } from 'zod';
+// 7. Research Agent (IndianKanoon statutory search synthesis)
+export const researchAgent = new Agent({
+  id: 'research-agent',
+  name: 'Research Agent',
+  instructions: `
+    You are a legal research analyst for Indian law.
+    Given a research query and a list of case summaries from IndianKanoon, write a structured legal research memo.
+    Format:
+    - Issue
+    - Applicable Law
+    - Key Cases with holdings
+    - Analysis
+    - Conclusion
+    Always cite each case by full name, year, and its relevance score.
+  `,
+  model: 'google/gemini-2.5-flash',
+  tools: {},
+});
 
-// 7. Workflow Steps Definitions
+// 8. Drafting Agent (docx template filling and alternative generation)
+export const draftingAgent = new Agent({
+  id: 'drafting-agent',
+  name: 'Drafting Agent',
+  instructions: `
+    You are a legal drafting assistant.
+    Given a clause type, context parameters, and a retrieved template, draft a legally sound contract clause.
+    Provide 2 alternative options. Rate each option by favorability (e.g., pro-client, balanced, pro-counterparty).
+    Output structure should be JSON.
+  `,
+  model: 'google/gemini-2.5-flash',
+  tools: {},
+});
+
+// 9. Negotiation Agent (NegMAS-inspired SAOP alternating offer generator)
+export const negotiationAgent = new Agent({
+  id: 'negotiation-agent',
+  name: 'Negotiation Agent',
+  instructions: `
+    You are an automated bilateral contract negotiator inspired by NegMAS.
+    Your goal is to evaluate the counterparty's latest counter-proposals against our playbook (our preferred, fallback, and red-line positions).
+    Perform a ZOPA (Zone of Possible Agreement) estimation and calculate the optimal concession rate based on time pressure/deadline countdown.
+    Output if we should accept, reject, or make a counter-offer with adjusted clause values.
+  `,
+  model: 'google/gemini-2.5-flash',
+  tools: {},
+});
+
+// 10. Playbook Compliance Agent (Automated compliance audits)
+export const playbookComplianceAgent = new Agent({
+  id: 'playbook-compliance-agent',
+  name: 'Playbook Compliance Agent',
+  instructions: `
+    You are a playbook compliance auditor.
+    Your task is to scan every clause in a contract and compare it against the corporate playbook positions.
+    Identify any deviations, violations of red-lines, and suggest compliant redline edits.
+  `,
+  model: 'google/gemini-2.5-flash',
+  tools: {},
+});
+
+// 11. Matter Twin Agent (Semantic auto-merge & conflict detection)
+export const matterTwinAgent = new Agent({
+  id: 'matter-twin-agent',
+  name: 'Matter Twin Agent',
+  instructions: `
+    You are a living matter twin builder.
+    Compare existing clauses of a matter against incoming document clauses.
+    Identify new, conflicting, or superseded clauses and generate a unified merged state of active clauses.
+  `,
+  model: 'google/gemini-2.5-flash',
+  tools: {},
+});
+
+// --- WORKFLOW STEPS ---
+
 const extractClausesStep = createStep({
   id: 'extract-clauses-step',
   inputSchema: z.object({
@@ -325,7 +398,8 @@ const analyzeRisksStep = createStep({
   },
 });
 
-// 8. Workflow Composition
+// --- WORKFLOW COMPOSITIONS ---
+
 export const documentWorkflow = new Workflow({
   id: 'document-processing-workflow',
   inputSchema: z.object({
@@ -344,6 +418,127 @@ documentWorkflow
   .then(analyzeRisksStep)
   .commit();
 
+// 1. Research Workflow
+export const researchWorkflow = new Workflow({
+  id: 'research-workflow',
+  inputSchema: z.object({
+    query: z.string(),
+    orgId: z.string(),
+    matterId: z.string(),
+  }),
+  outputSchema: z.any(),
+});
+
+const runResearchStep = createStep({
+  id: 'run-research-step',
+  inputSchema: z.object({
+    query: z.string(),
+  }),
+  outputSchema: z.object({
+    summary: z.string(),
+  }),
+  execute: async ({ getInitData }) => {
+    const { query } = getInitData<any>();
+    // Call researchAgent to synthesize based on input
+    const res = await researchAgent.generate(`Search query: ${query}. Create a synthesis of research findings.`);
+    return { summary: res.text };
+  }
+});
+
+researchWorkflow.then(runResearchStep).commit();
+
+// 2. Redline Workflow
+export const redlineWorkflow = new Workflow({
+  id: 'redline-workflow',
+  inputSchema: z.object({
+    diffHtml: z.string(),
+    contractType: z.string(),
+    playbookPositions: z.any(),
+  }),
+  outputSchema: z.any(),
+});
+
+const runRedlineStep = createStep({
+  id: 'run-redline-step',
+  inputSchema: z.object({
+    diffHtml: z.string(),
+    contractType: z.string(),
+    playbookPositions: z.any(),
+  }),
+  outputSchema: z.object({
+    redlines: z.string(),
+  }),
+  execute: async ({ getInitData }) => {
+    const { diffHtml, contractType, playbookPositions } = getInitData<any>();
+    const prompt = `Analyze this diff HTML for a ${contractType} contract: ${diffHtml}. Suggest redlines based on: ${JSON.stringify(playbookPositions)}`;
+    const res = await redlineAgent.generate(prompt);
+    return { redlines: res.text };
+  }
+});
+
+// Stub referencing negotiation/redline agent
+const redlineAgent = negotiationAgent; 
+
+redlineWorkflow.then(runRedlineStep).commit();
+
+// 3. Negotiation Workflow
+export const negotiationRoundWorkflow = new Workflow({
+  id: 'negotiation-workflow',
+  inputSchema: z.object({
+    roundHistory: z.any(),
+    playbookPositions: z.any(),
+  }),
+  outputSchema: z.any(),
+});
+
+const runNegotiationStep = createStep({
+  id: 'run-negotiation-step',
+  inputSchema: z.object({
+    roundHistory: z.any(),
+    playbookPositions: z.any(),
+  }),
+  outputSchema: z.object({
+    offer: z.string(),
+  }),
+  execute: async ({ getInitData }) => {
+    const { roundHistory, playbookPositions } = getInitData<any>();
+    const prompt = `Analyze round history: ${JSON.stringify(roundHistory)}. Generate next concession offer using our playbook: ${JSON.stringify(playbookPositions)}`;
+    const res = await negotiationAgent.generate(prompt);
+    return { offer: res.text };
+  }
+});
+
+negotiationRoundWorkflow.then(runNegotiationStep).commit();
+
+// 4. Playbook Audit Workflow
+export const playbookAuditWorkflow = new Workflow({
+  id: 'playbook-audit-workflow',
+  inputSchema: z.object({
+    documentId: z.string(),
+    playbookId: z.string(),
+  }),
+  outputSchema: z.any(),
+});
+
+const runPlaybookAuditStep = createStep({
+  id: 'run-playbook-audit-step',
+  inputSchema: z.object({
+    documentId: z.string(),
+    playbookId: z.string(),
+  }),
+  outputSchema: z.object({
+    auditResult: z.string(),
+  }),
+  execute: async ({ getInitData }) => {
+    const { documentId } = getInitData<any>();
+    const res = await playbookComplianceAgent.generate(`Perform a playbook audit on document: ${documentId}`);
+    return { auditResult: res.text };
+  }
+});
+
+playbookAuditWorkflow.then(runPlaybookAuditStep).commit();
+
+
 // Initialize Mastra Instance
 export const mastra = new Mastra({
   agents: {
@@ -353,8 +548,17 @@ export const mastra = new Mastra({
     qaAgent,
     benchmarkAgent,
     citationAgent,
+    researchAgent,
+    draftingAgent,
+    negotiationAgent,
+    playbookComplianceAgent,
+    matterTwinAgent,
   },
   workflows: {
     documentWorkflow,
+    researchWorkflow,
+    redlineWorkflow,
+    negotiationRoundWorkflow,
+    playbookAuditWorkflow,
   },
 });

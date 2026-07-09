@@ -22,3 +22,8 @@ important.txt
 .DS_Store
 *.log
 Thumbs.db
+
+# Cloned and helper repositories
+cloned repo/
+claude skills/
+

@@ -46,7 +46,7 @@ router.get('/', authMiddleware, async (req: AuthenticatedRequest, res: Response)
   try {
     const mattersCollection = await dbService.getCollection('matters');
     const matters = await mattersCollection.find({ org_id: orgId }).sort({ created_at: -1 }).toArray();
-    return res.json({ matters });
+    return res.json({ matters, data: matters });
   } catch (error: any) {
     console.error('Error fetching matters:', error);
     return res.status(500).json({ error: error.message });

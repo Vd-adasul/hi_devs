@@ -1,0 +1,94 @@
+flowchart TD
+
+%% =====================================================
+%% SYSTEM ENTRY / USER ACTION
+%% =====================================================
+subgraph ENTRY [Entry Points & Authentication]
+    U[User Registration / Login] -->|JWT issued / verified| AUTH[Auth Middleware]
+    AUTH -->|org_id scoping| SCOPE[Tenant-Isolated Scope]
+    
+    A1[Lawyer Creates Matter] -->|POST /api/v1/matters| M_CREATE[Matter Created]
+    M_CREATE --> M_DB[(MongoDB<br/>matters collection)]
+    
+    A2[Upload Contract PDF] -->|POST /api/v1/matters/:matterId/documents| DOC_UPLOAD[Upload Request]
+end
+
+%% =====================================================
+%% DOCUMENT PROCESSING PIPELINE (ACTIVE FLOW)
+%% =====================================================
+subgraph DOC_PIPE [Document Processing Pipeline - Active]
+    DOC_UPLOAD -->|pdf-parse| EXTRACT[Raw Text & Page Count Extracted]
+    DOC_UPLOAD -->|s3Service.uploadFile| S3_STORE[(AWS S3<br/>Original PDFs)]
+    
+    EXTRACT -->|Initial record| DOC_DB[(MongoDB<br/>documents collection)]
+    
+    EXTRACT -->|Triggers| WF[Mastra Document Workflow]
+    
+    subgraph WF_STEPS [Mastra Workflow Steps]
+        direction TB
+        
+        WF --> STEP1[Step 1: extract-clauses-step]
+        STEP1 -->|documentProcessingAgent<br/>Gemini 2.5 Flash LLM| C_PARSE[Parse Clauses & Categories]
+        C_PARSE -->|dbService| CLAUSE_DB[(MongoDB<br/>clauses collection)]
+        C_PARSE -->|getEmbedding| EMBED_GEN[Gemini Embeddings]
+        EMBED_GEN -->|qdrantService.upsertPoints| QD_COLL[(Qdrant Cloud<br/>legal_documents collection)]
+        
+        STEP1 --> STEP2[Step 2: generate-timeline-step]
+        STEP2 -->|timelineAgent<br/>Gemini 2.5 Flash LLM| T_PARSE[Extract Obligations & Deadlines]
+        T_PARSE -->|dbService| OBLIG_DB[(MongoDB<br/>obligations collection)]
+        
+        STEP2 --> STEP3[Step 3: analyze-risks-step]
+        STEP3 -->|riskAgent<br/>Gemini 2.5 Flash LLM| R_PARSE[Analyze Risks & Explanations]
+        R_PARSE -->|dbService| RISK_DB[(MongoDB<br/>risks collection)]
+    end
+    
+    STEP3 -->|Workflow Completed| DOC_UPDATE[Update Document Status to 'completed']
+    DOC_UPDATE --> DOC_DB
+end
+
+%% =====================================================
+%% SEMANTIC QA PIPELINE (ACTIVE FLOW)
+%% =====================================================
+subgraph QA_PIPE [Grounded Q&A Pipeline - Active]
+    Q_IN[Lawyer Questions Matter] -->|POST /api/v1/matters/:matterId/qa| QA_ROUTE[QA Endpoint]
+    QA_ROUTE -->|getEmbedding| Q_EMBED[Query Embeddings]
+    Q_EMBED -->|qdrantService.searchPoints| QD_SEARCH{Qdrant Match}
+    QD_COLL -.->|org_id filtered search| QD_SEARCH
+    
+    QD_SEARCH -->|Top 5 Matching Clauses| CONTEXT[Context Evidence Assembled]
+    CONTEXT -->|qaAgent<br/>Gemini 2.5 Flash LLM| QA_GEN[Generate Grounded Answer]
+    
+    QA_GEN -->|Answer & Context| ENKRYPT[Enkrypt AI Guardrails Gate]
+    ENKRYPT -->|evaluate: toxicity, pii, bias, injection| ENKRYPT_RES{Safety Check}
+    
+    ENKRYPT_RES -->|Trust Score & Safety Metadata| OUT[Grounded Answer + Sources + Trust Score]
+end
+
+%% =====================================================
+%% INACTIVE AGENTS / STUBS (DEFINED BUT NOT TRIGGERED)
+%% =====================================================
+subgraph STUBS [Mastra Stubs - Inactive]
+    BA[benchmarkAgent] -.->|Defined in code with searchQdrantTool| BA_STUB[No active API endpoint or workflow]
+    CA[citationAgent] -.->|Defined in code with verifyCitationTool| CA_STUB[No active API endpoint or workflow]
+    V_CIT[verifyCitationTool] -.->|Queries api.case.law & indiankanoon.org| CA
+end
+
+%% =====================================================
+%% STORAGE & SECURITY RELATIONSHIPS
+%% =====================================================
+subgraph DATA [Storage Layer]
+    M_DB
+    DOC_DB
+    CLAUSE_DB
+    OBLIG_DB
+    RISK_DB
+    S3_STORE
+    QD_COLL
+end
+
+SCOPE -.-> M_DB
+SCOPE -.-> DOC_DB
+SCOPE -.-> CLAUSE_DB
+SCOPE -.-> OBLIG_DB
+SCOPE -.-> RISK_DB
+SCOPE -.-> QD_COLL
