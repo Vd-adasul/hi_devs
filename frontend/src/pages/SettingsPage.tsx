@@ -112,13 +112,13 @@ export function SettingsPage() {
 
   const { data: defsData, isLoading } = useQuery({
     queryKey: ['field-definitions', filterType],
-    queryFn: () => api.get('/field-definitions', {
+    queryFn: () => api.get('/settings/field-definitions', {
       params: filterType ? { contractType: filterType } : undefined,
     }).then(r => r.data),
   })
 
   const createField = useMutation({
-    mutationFn: (body: any) => api.post('/field-definitions', body).then(r => r.data),
+    mutationFn: (body: any) => api.post('/settings/field-definitions', body).then(r => r.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['field-definitions'] })
       setShowNewForm(false)
@@ -131,7 +131,7 @@ export function SettingsPage() {
   })
 
   const deleteField = useMutation({
-    mutationFn: (id: string) => api.delete(`/field-definitions/${id}`),
+    mutationFn: (id: string) => api.delete(`/settings/field-definitions/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['field-definitions'] }),
   })
 

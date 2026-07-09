@@ -58,7 +58,12 @@ router.post('/register', async (req: Request, res: Response) => {
     const userId = insertResult.insertedId.toString();
 
     // Sign JWT immediately
-    const token = jwt.sign(
+    const accessToken = jwt.sign(
+      { userId, orgId, role: newUser.role },
+      JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+    const refreshToken = jwt.sign(
       { userId, orgId, role: newUser.role },
       JWT_SECRET,
       { expiresIn: '7d' }
@@ -66,7 +71,8 @@ router.post('/register', async (req: Request, res: Response) => {
 
     return res.status(201).json({
       message: 'User and organization registered successfully.',
-      token,
+      accessToken,
+      refreshToken,
       user: {
         id: userId,
         email,
@@ -97,7 +103,16 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     // Sign JWT
-    const token = jwt.sign(
+    const accessToken = jwt.sign(
+      {
+        userId: user._id.toString(),
+        orgId: user.org_id,
+        role: user.role,
+      },
+      JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+    const refreshToken = jwt.sign(
       {
         userId: user._id.toString(),
         orgId: user.org_id,
@@ -108,12 +123,14 @@ router.post('/login', async (req: Request, res: Response) => {
     );
 
     return res.json({
-      token,
+      accessToken,
+      refreshToken,
       user: {
         id: user._id.toString(),
         email: user.email,
         orgId: user.org_id,
         role: user.role,
+        name: user.name,
       },
     });
   } catch (error: any) {
@@ -246,7 +263,12 @@ router.post('/accept-invite/:token', async (req: Request, res: Response) => {
     );
 
     // Sign JWT
-    const jwtToken = jwt.sign(
+    const accessToken = jwt.sign(
+      { userId, orgId: invite.orgId, role: invite.role },
+      JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+    const refreshToken = jwt.sign(
       { userId, orgId: invite.orgId, role: invite.role },
       JWT_SECRET,
       { expiresIn: '7d' }
@@ -254,7 +276,8 @@ router.post('/accept-invite/:token', async (req: Request, res: Response) => {
 
     return res.status(201).json({
       message: 'Invitation accepted and account created successfully.',
-      token: jwtToken,
+      accessToken,
+      refreshToken,
       user: {
         id: userId,
         email: invite.email,
@@ -270,23 +293,29 @@ router.post('/accept-invite/:token', async (req: Request, res: Response) => {
 
 // 6. Token Refresh
 router.post('/refresh', async (req: Request, res: Response) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
+  // Frontend sends { refreshToken } in the request body
+  const token = req.body?.refreshToken;
 
   if (!token) {
-    return res.status(401).json({ error: 'Token is required.' });
+    return res.status(401).json({ error: 'Refresh token is required.' });
   }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true }) as any;
-    const newToken = jwt.sign(
+    const accessToken = jwt.sign(
+      { userId: decoded.userId, orgId: decoded.orgId, role: decoded.role },
+      JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+    const refreshToken = jwt.sign(
       { userId: decoded.userId, orgId: decoded.orgId, role: decoded.role },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
 
     return res.json({
-      token: newToken,
+      accessToken,
+      refreshToken,
       user: {
         id: decoded.userId,
         orgId: decoded.orgId,
@@ -295,6 +324,140 @@ router.post('/refresh', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     return res.status(401).json({ error: 'Invalid token structure or signature.' });
+  }
+});
+
+// 7. Get Invite Preview (used by AcceptInvitePage to pre-validate token)
+router.get('/invites/:token', async (req: Request, res: Response) => {
+  const { token } = req.params;
+  try {
+    const invitesCollection = await dbService.getCollection('invites');
+    const orgsCollection = await dbService.getCollection('organizations');
+    const invite = await invitesCollection.findOne({ token, acceptedAt: null });
+    if (!invite || invite.expiresAt < new Date()) {
+      return res.status(404).json({ error: 'Invalid or expired invitation token.' });
+    }
+    const org = await orgsCollection.findOne({ orgId: invite.orgId });
+    return res.json({ email: invite.email, orgName: org?.name || 'Your Firm', role: invite.role });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// 8. Accept Invite via body (frontend sends { token, password, name } in body)
+router.post('/accept-invite', async (req: Request, res: Response) => {
+  const { token, password, name } = req.body;
+  if (!token || !password) {
+    return res.status(400).json({ error: 'Token and password are required.' });
+  }
+  try {
+    const invitesCollection = await dbService.getCollection('invites');
+    const usersCollection = await dbService.getCollection('users');
+    const invite = await invitesCollection.findOne({ token, acceptedAt: null });
+    if (!invite || invite.expiresAt < new Date()) {
+      return res.status(400).json({ error: 'Invalid or expired invitation token.' });
+    }
+    const existingUser = await usersCollection.findOne({ email: invite.email });
+    if (existingUser) {
+      return res.status(400).json({ error: 'A user with this email is already registered.' });
+    }
+    const newUser = {
+      email: invite.email,
+      name: name || '',
+      password: hashPassword(password),
+      org_id: invite.orgId,
+      role: invite.role,
+      created_at: new Date(),
+    };
+    const insertResult = await usersCollection.insertOne(newUser);
+    const userId = insertResult.insertedId.toString();
+    await invitesCollection.updateOne({ _id: invite._id }, { $set: { acceptedAt: new Date() } });
+    const accessToken = jwt.sign({ userId, orgId: invite.orgId, role: invite.role }, JWT_SECRET, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ userId, orgId: invite.orgId, role: invite.role }, JWT_SECRET, { expiresIn: '7d' });
+    return res.status(201).json({
+      message: 'Invitation accepted and account created successfully.',
+      accessToken,
+      refreshToken,
+      user: { id: userId, email: invite.email, orgId: invite.orgId, role: invite.role },
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// 9. GET /users/me — returns current user profile (used by ProfilePage & SettingsPage)
+router.get('/users/me', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const usersCollection = await dbService.getCollection('users');
+    let dbUser: any;
+    if (req.user.userId.length === 24) {
+      const { ObjectId } = await import('mongodb');
+      dbUser = await usersCollection.findOne({ _id: new ObjectId(req.user.userId) });
+    } else {
+      dbUser = await usersCollection.findOne({ email: req.user.userId });
+    }
+    if (!dbUser) return res.status(404).json({ error: 'User not found.' });
+    return res.json({
+      id: dbUser._id.toString(),
+      email: dbUser.email,
+      name: dbUser.name || '',
+      orgId: dbUser.org_id,
+      role: dbUser.role,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// 10. PATCH /users/me — update current user's profile
+router.patch('/users/me', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { name, email } = req.body;
+  try {
+    const usersCollection = await dbService.getCollection('users');
+    const update: Record<string, any> = {};
+    if (name !== undefined) update.name = name;
+    if (email !== undefined) update.email = email;
+    let filter: any;
+    if (req.user.userId.length === 24) {
+      const { ObjectId } = await import('mongodb');
+      filter = { _id: new ObjectId(req.user.userId) };
+    } else {
+      filter = { email: req.user.userId };
+    }
+    await usersCollection.updateOne(filter, { $set: update });
+    const dbUser = await usersCollection.findOne(filter);
+    return res.json({ id: dbUser?._id.toString(), email: dbUser?.email, name: dbUser?.name || '', orgId: dbUser?.org_id, role: dbUser?.role });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// 11. POST /users/me/password — change password
+router.post('/users/me/password', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { currentPassword, newPassword } = req.body;
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'currentPassword and newPassword are required.' });
+  }
+  try {
+    const usersCollection = await dbService.getCollection('users');
+    let filter: any;
+    if (req.user.userId.length === 24) {
+      const { ObjectId } = await import('mongodb');
+      filter = { _id: new ObjectId(req.user.userId) };
+    } else {
+      filter = { email: req.user.userId };
+    }
+    const dbUser = await usersCollection.findOne(filter);
+    if (!dbUser || dbUser.password !== hashPassword(currentPassword)) {
+      return res.status(401).json({ error: 'Current password is incorrect.' });
+    }
+    await usersCollection.updateOne(filter, { $set: { password: hashPassword(newPassword) } });
+    return res.json({ message: 'Password changed successfully.' });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
   }
 });
 

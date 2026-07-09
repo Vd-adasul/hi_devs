@@ -15,7 +15,7 @@ router.get('/users', authMiddleware, async (req: AuthenticatedRequest, res: Resp
 
   try {
     const usersColl = await dbService.getCollection('users');
-    const users = await usersColl.find({ orgId: orgId }).toArray();
+    const users = await usersColl.find({ org_id: orgId }).project({ password: 0 }).toArray();
     return res.json({ data: users, users });
   } catch (error: any) {
     return res.status(500).json({ error: error.message });

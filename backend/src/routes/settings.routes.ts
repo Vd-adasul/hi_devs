@@ -160,4 +160,53 @@ router.get('/billing', authMiddleware, async (req: AuthenticatedRequest, res: Re
   }
 });
 
+// 8. Field Definitions — custom contract fields (used by SettingsPage)
+router.get('/field-definitions', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const orgId = req.user?.orgId || 'org_default_firm';
+  const { contractType } = req.query;
+  try {
+    const coll = await dbService.getCollection('field_definitions');
+    const filter: any = { org_id: orgId };
+    if (contractType) filter.contractType = contractType;
+    const docs = await coll.find(filter).toArray();
+    return res.json({ data: docs });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/field-definitions', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const orgId = req.user?.orgId || 'org_default_firm';
+  const { fieldKey, label, contractType, fieldType, required, defaultValue, options } = req.body;
+  if (!fieldKey || !label) {
+    return res.status(400).json({ error: 'fieldKey and label are required.' });
+  }
+  try {
+    const coll = await dbService.getCollection('field_definitions');
+    const newDef = {
+      org_id: orgId, fieldKey, label, contractType: contractType || null,
+      fieldType: fieldType || 'text', required: required ?? false,
+      defaultValue: defaultValue ?? null, options: options ?? [],
+      created_at: new Date(),
+    };
+    const result = await coll.insertOne(newDef);
+    return res.status(201).json({ data: { ...newDef, _id: result.insertedId } });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/field-definitions/:id', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const orgId = req.user?.orgId || 'org_default_firm';
+  const { id } = req.params;
+  try {
+    const { ObjectId } = await import('mongodb');
+    const coll = await dbService.getCollection('field_definitions');
+    await coll.deleteOne({ _id: new ObjectId(id), org_id: orgId });
+    return res.json({ message: 'Field definition deleted.' });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;

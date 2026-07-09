@@ -50,6 +50,7 @@ app.use(express.json());
 
 // Routes
 app.use('/api/v1/auth', authRouter);
+app.use('/api/v1/users', authRouter); // /users/me, /users/me/password etc live in auth router
 app.use('/api/v1/matters', mattersRouter);
 app.use('/api/v1/matters', documentsRouter);
 app.use('/api/v1/matters', qaRouter);
