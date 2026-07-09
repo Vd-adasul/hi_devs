@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate, useSearchParams, Link } from 'react-router-dom'
+import { useNavigate, useSearchParams, Link, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/auth'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -203,12 +203,20 @@ export function LoginPage() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const login = useAuthStore((s) => s.login)
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [stub, setStub] = useState<StubKind | null>(null)
   const [forgotOpen, setForgotOpen] = useState(false)
+
+  // Already authenticated — skip login page
+  if (isAuthenticated) {
+    const rawNext = searchParams.get('next')
+    const dest = rawNext && rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/dashboard'
+    return <Navigate to={dest} replace />
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
