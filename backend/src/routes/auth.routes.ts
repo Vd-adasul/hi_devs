@@ -38,6 +38,7 @@ router.post('/register', async (req: Request, res: Response) => {
     // Create Org
     await orgsCollection.insertOne({
       orgId,
+      org_id: orgId,
       name: finalOrgName,
       tier: 'free',
       orgApiKeys: [],
@@ -112,7 +113,7 @@ router.post('/login', async (req: Request, res: Response) => {
       JWT_SECRET,
       { expiresIn: '15m' }
     );
-    const refreshToken = jwt.sign(
+    const token = jwt.sign(
       {
         userId: user._id.toString(),
         orgId: user.org_id,
@@ -123,14 +124,14 @@ router.post('/login', async (req: Request, res: Response) => {
     );
 
     return res.json({
+      token,
       accessToken,
-      refreshToken,
+      refreshToken: token,
       user: {
         id: user._id.toString(),
         email: user.email,
         orgId: user.org_id,
         role: user.role,
-        name: user.name,
       },
     });
   } catch (error: any) {

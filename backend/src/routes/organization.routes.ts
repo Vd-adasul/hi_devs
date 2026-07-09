@@ -11,12 +11,13 @@ router.get('/', authMiddleware, async (req: AuthenticatedRequest, res: Response)
 
   try {
     const orgsColl = await dbService.getCollection('organizations');
-    let org = await orgsColl.findOne({ org_id: orgId });
+    let org = await orgsColl.findOne({ $or: [{ org_id: orgId }, { orgId }] });
 
     if (!org) {
       // Seed default organization if missing
       org = {
         org_id: orgId,
+        orgId,
         name: 'Default Firm',
         slug: 'default-firm',
         subscriptionTier: 'free',
@@ -62,8 +63,8 @@ router.patch('/', authMiddleware, async (req: AuthenticatedRequest, res: Respons
     if (settings) updateFields.settings = settings;
 
     await orgsColl.updateOne(
-      { org_id: orgId },
-      { $set: updateFields },
+      { $or: [{ org_id: orgId }, { orgId }] },
+      { $set: { ...updateFields, org_id: orgId, orgId } },
       { upsert: true }
     );
 
@@ -75,6 +76,10 @@ router.patch('/', authMiddleware, async (req: AuthenticatedRequest, res: Respons
 
 // 3. Install industry pack (stubs)
 router.post('/install-pack', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  return res.json({ message: 'Industry pack installed successfully.' });
+});
+
+router.post('/install-industry-pack', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   return res.json({ message: 'Industry pack installed successfully.' });
 });
 

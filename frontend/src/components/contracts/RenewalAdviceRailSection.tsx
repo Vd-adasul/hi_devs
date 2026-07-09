@@ -83,11 +83,6 @@ export function RenewalAdviceRailSection({
   const days = useMemo(() => daysUntil(expiryDate), [expiryDate])
   const inWindow = days !== null && days <= 180 && days >= -30
 
-  // Only show the section when the contract has a meaningful renewal
-  // context — either it's within the window or someone already asked
-  // for advice.
-  if (!expiryDate || (!inWindow && !advice)) return null
-
   const run = useMutation({
     mutationFn: async () => (await api.post<{ ok: boolean; advice: RenewalAdvice }>(
       `/contracts/${contractId}/renewal-advice`,
@@ -102,6 +97,11 @@ export function RenewalAdviceRailSection({
     )).data,
     onSuccess: () => onAfterDecision?.(),
   })
+
+  // Only show the section when the contract has a meaningful renewal
+  // context — either it's within the window or someone already asked
+  // for advice.
+  if (!expiryDate || (!inWindow && !advice)) return null
 
   const daysLabel = days === null ? '' : days < 0 ? `Expired ${Math.abs(days)}d ago`
     : days === 0 ? 'Expires today'

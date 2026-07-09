@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { DbService } from './services/db.service.js';
 import { QdrantService } from './services/qdrant.service.js';
 import { CronService } from './services/cron.service.js';
+import frontendCompatRouter from './routes/frontend-compat.routes.js';
 
 // Routers
 import authRouter from './routes/auth.routes.js';
@@ -47,6 +48,10 @@ app.use('/api/v1/obligations/:id/evidence', express.raw({ type: '*/*', limit: '1
 
 // General JSON body parser
 app.use(express.json());
+
+// Frontend compatibility aliases must register before the more specific
+// feature routers so the existing UI can hit the shapes it expects.
+app.use('/api/v1', frontendCompatRouter);
 
 // Routes
 app.use('/api/v1/auth', authRouter);
