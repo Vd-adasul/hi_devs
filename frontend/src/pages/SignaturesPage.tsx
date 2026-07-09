@@ -1,256 +1,214 @@
-import { useState, useEffect } from 'react';
-import api from '../lib/api.js';
-import {
-  FileSignature,
-  Plus,
-  Clock,
-  CheckCircle,
-  ExternalLink,
-  RefreshCw
-} from 'lucide-react';
+/**
+ * SignaturesPage — org-wide signature requests admin (Phase 07).
+ *
+ * Replaces the previous "Coming Soon" stub. Shows every SignatureRequest
+ * in the user's org with contract title, signer roster, status, and timing.
+ * Filter by status; click a row to jump to the contract detail page where
+ * the SignatureStatusRailSection has the full controls (void / copy link).
+ */
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '@/lib/api'
+import { PenSquare, CheckCircle2, Clock, XCircle, Ban, AlertCircle, Loader2, ArrowRight } from 'lucide-react'
 
-export default function SignaturesPage() {
-  const [requests, setRequests] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
-  const [creating, setCreating] = useState(false);
+type SrStatus = 'PENDING' | 'COMPLETED' | 'VOIDED' | 'EXPIRED'
 
-  // Form states
-  const [contracts, setContracts] = useState<any[]>([]);
-  const [selectedContractId, setSelectedContractId] = useState('');
-  const [signerName, setSignerName] = useState('');
-  const [signerEmail, setSignerEmail] = useState('');
+interface ApiSigner {
+  id: string
+  name: string
+  email: string
+  role: string | null
+  status: 'PENDING' | 'SIGNED' | 'DECLINED'
+  signedAt: string | null
+  signOrder: number
+}
+interface ApiSignatureRequest {
+  id: string
+  status: SrStatus
+  signOrder: 'ANY' | 'SEQUENTIAL'
+  createdAt: string
+  completedAt: string | null
+  voidedAt: string | null
+  expiresAt: string | null
+  signedCount: number
+  totalSigners: number
+  signers: ApiSigner[]
+  contract: { id: string; title: string; type: string; counterpartyName: string | null } | null
+}
 
-  const loadRequests = async () => {
-    try {
-      const res = await api.get('/signatures');
-      setRequests(res.data.data || []);
+const STATUS_FILTERS: { key: SrStatus | 'ALL'; label: string }[] = [
+  { key: 'ALL',       label: 'All' },
+  { key: 'PENDING',   label: 'Awaiting' },
+  { key: 'COMPLETED', label: 'Completed' },
+  { key: 'VOIDED',    label: 'Voided' },
+  { key: 'EXPIRED',   label: 'Expired' },
+]
 
-      // Also load matters to populate contracts selection
-      const matRes = await api.get('/matters');
-      const matterList = matRes.data.data || [];
-      const docs: any[] = [];
-      for (const m of matterList) {
-        try {
-          const docRes = await api.get(`/matters/${m._id}/documents`);
-          (docRes.data.documents || []).forEach((d: any) => {
-            docs.push({ id: d._id, name: `${d.name} (${m.name})` });
-          });
-        } catch {}
-      }
-      setContracts(docs);
-    } catch (err) {
-      console.warn('Failed to load signature requests:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+const STATUS_PILL: Record<SrStatus, { bg: string; fg: string; icon: React.ComponentType<{ className?: string }>; label: string }> = {
+  PENDING:   { bg: 'bg-amber-50 border-amber-200',   fg: 'text-amber-700',   icon: Clock,         label: 'Awaiting' },
+  COMPLETED: { bg: 'bg-emerald-50 border-emerald-200', fg: 'text-emerald-700', icon: CheckCircle2, label: 'Completed' },
+  VOIDED:    { bg: 'bg-gray-100 border-gray-200',     fg: 'text-gray-600',    icon: Ban,           label: 'Voided' },
+  EXPIRED:   { bg: 'bg-red-50 border-red-200',        fg: 'text-red-700',     icon: XCircle,       label: 'Expired' },
+}
 
-  useEffect(() => {
-    loadRequests();
-  }, []);
+function relTime(iso: string | null): string {
+  if (!iso) return ''
+  const t = new Date(iso).getTime()
+  const diff = Date.now() - t
+  if (diff < 60_000) return 'just now'
+  if (diff < 3600_000) return `${Math.round(diff / 60_000)}m ago`
+  if (diff < 86400_000) return `${Math.round(diff / 3600_000)}h ago`
+  return `${Math.round(diff / 86400_000)}d ago`
+}
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedContractId || !signerName || !signerEmail) return;
-    setCreating(true);
-    try {
-      await api.post('/signatures/request', {
-        contractId: selectedContractId,
-        signers: [{ email: signerEmail, name: signerName }],
-      });
-      setSelectedContractId('');
-      setSignerName('');
-      setSignerEmail('');
-      setShowCreate(false);
-      loadRequests();
-      alert('E-signature request dispatched successfully.');
-    } catch (err: any) {
-      alert(`Error: ${err.response?.data?.error || err.message}`);
-    } finally {
-      setCreating(false);
-    }
-  };
+export function SignaturesPage() {
+  const [filter, setFilter] = useState<SrStatus | 'ALL'>('ALL')
 
-  const statusColor = (status: string) => {
-    switch (status) {
-      case 'signed':
-      case 'completed': return 'bg-emerald-100 text-emerald-700';
-      case 'pending': return 'bg-amber-100 text-amber-700';
-      default: return 'bg-slate-100 text-slate-600';
-    }
-  };
+  const { data, isLoading, isError } = useQuery<{ data: ApiSignatureRequest[]; total: number }>({
+    queryKey: ['signatures', filter],
+    queryFn: () => api.get(`/signature-requests${filter !== 'ALL' ? `?status=${filter}` : ''}`).then(r => r.data),
+    refetchInterval: 30_000,
+  })
+
+  const items = data?.data ?? []
+  const counts = items.reduce<Record<string, number>>((acc, i) => {
+    acc[i.status] = (acc[i.status] ?? 0) + 1
+    return acc
+  }, {})
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">E-Signature Dispatch</h1>
-          <p className="text-sm text-slate-500 mt-1">Track counterparty signatures, view sign-off status, and generate secure OTP links</p>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={loadRequests}
-            className="flex items-center gap-1.5 border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-sm font-semibold px-4 py-2 rounded-lg transition-colors"
-          >
-            <RefreshCw size={14} />
-            Refresh
-          </button>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-4 py-2.5 rounded-lg transition-colors"
-          >
-            <Plus size={16} />
-            New Signature Request
-          </button>
-        </div>
+    <div className="px-6 py-6 max-w-6xl mx-auto" data-testid="signatures-page">
+      <div className="flex items-center gap-3 mb-1">
+        <PenSquare className="h-5 w-5 text-emerald-600" />
+        <h1 className="text-2xl font-semibold text-gray-900">Signatures</h1>
+      </div>
+      <p className="text-sm text-gray-500 mb-5">
+        Every contract sent for signature across your organization.
+      </p>
+
+      {/* Filter tabs */}
+      <div className="flex items-center gap-1 mb-5 border-b border-gray-200">
+        {STATUS_FILTERS.map(f => {
+          const isActive = filter === f.key
+          const count = f.key === 'ALL' ? items.length : counts[f.key] ?? 0
+          return (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => setFilter(f.key)}
+              data-testid={`filter-${f.key.toLowerCase()}`}
+              className={`px-4 py-2 text-sm border-b-2 -mb-px transition-colors ${
+                isActive
+                  ? 'border-emerald-600 text-emerald-700 font-medium'
+                  : 'border-transparent text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              {f.label}
+              {count > 0 && (
+                <span className={`ml-2 text-xs px-1.5 py-0.5 rounded-full ${
+                  isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'
+                }`}>
+                  {count}
+                </span>
+              )}
+            </button>
+          )
+        })}
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-4">
-        {[
-          { label: 'Total Requests', value: requests.length, icon: FileSignature, color: 'text-indigo-600 bg-indigo-50' },
-          { label: 'Pending Signature', value: requests.filter(r => r.status === 'pending').length, icon: Clock, color: 'text-amber-600 bg-amber-50' },
-          { label: 'Completed Sign-Offs', value: requests.filter(r => r.status === 'completed' || r.status === 'signed').length, icon: CheckCircle, color: 'text-emerald-600 bg-emerald-50' },
-        ].map(s => (
-          <div key={s.label} className="bg-white border border-slate-200 rounded-xl p-5 flex items-center gap-4 shadow-sm">
-            <div className={`p-3 rounded-lg ${s.color}`}>
-              <s.icon size={20} />
-            </div>
-            <div>
-              <p className="text-xs text-slate-500 font-medium">{s.label}</p>
-              <p className="text-2xl font-bold text-slate-800">{s.value}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Requests Table */}
-      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-        {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" />
-          </div>
-        ) : requests.length === 0 ? (
-          <div className="py-20 text-center">
-            <FileSignature size={32} className="text-slate-300 mx-auto mb-3" />
-            <p className="text-sm text-slate-400">No signature requests found.</p>
-          </div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-100">
+      {/* List */}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
+        </div>
+      ) : isError ? (
+        <div className="flex items-start gap-2 p-4 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+          <AlertCircle className="h-4 w-4 mt-0.5" />
+          Failed to load signature requests.
+        </div>
+      ) : items.length === 0 ? (
+        <div className="text-center py-16 px-6 border border-dashed border-gray-200 rounded-xl">
+          <PenSquare className="h-8 w-8 text-gray-300 mx-auto mb-2" />
+          <p className="text-sm text-gray-500 mb-1">
+            {filter === 'ALL' ? 'No signature requests yet.' : `No ${filter.toLowerCase()} signature requests.`}
+          </p>
+          <p className="text-xs text-gray-400">
+            Open any contract and click <strong>Send for Signature</strong> to get started.
+          </p>
+        </div>
+      ) : (
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <table className="w-full text-sm" data-testid="signatures-table">
+            <thead className="bg-gray-50 text-xs uppercase tracking-wider text-gray-500">
               <tr>
-                <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Contract Title</th>
-                <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Signer Info</th>
-                <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
-                <th className="text-left px-6 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">Link (Testing)</th>
+                <th className="text-left px-5 py-3 font-medium">Contract</th>
+                <th className="text-left px-5 py-3 font-medium">Signers</th>
+                <th className="text-left px-5 py-3 font-medium">Status</th>
+                <th className="text-left px-5 py-3 font-medium">Sent</th>
+                <th className="text-right px-5 py-3 font-medium">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50">
-              {requests.map((r: any) => (
-                <tr key={r._id} className="hover:bg-slate-50/50 transition-colors">
-                  <td className="px-6 py-4">
-                    <div>
-                      <p className="font-semibold text-slate-800">{r.contractTitle || 'Contract'}</p>
-                      <p className="text-xs text-slate-400 mt-0.5">ID: {r._id}</p>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4">
-                    {r.signers?.map((s: any, idx: number) => (
-                      <div key={idx} className="flex flex-col gap-0.5">
-                        <span className="font-medium text-slate-700">{s.name} ({s.email})</span>
-                        <span className="text-[10px] text-slate-400">OTP Code: <strong className="text-slate-600 font-mono">{s.otp}</strong></span>
-                      </div>
-                    ))}
-                  </td>
-                  <td className="px-6 py-4">
-                    <span className={`text-xs font-bold px-2 py-1 rounded uppercase ${statusColor(r.status)}`}>
-                      {r.status}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4">
-                    {r.signers?.map((s: any, idx: number) => (
-                      <a
-                        key={idx}
-                        href={`/sign/${s.token}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-xs text-indigo-600 font-semibold hover:underline flex items-center gap-1"
+            <tbody className="divide-y divide-gray-100">
+              {items.map(it => {
+                const pill = STATUS_PILL[it.status]
+                const StatusIcon = pill.icon
+                return (
+                  <tr key={it.id} className="hover:bg-gray-50" data-testid={`signature-row-${it.id}`}>
+                    <td className="px-5 py-3">
+                      <Link
+                        to={`/contracts/${it.contract?.id ?? ''}`}
+                        className="font-medium text-gray-900 hover:text-blue-600 truncate block max-w-xs"
+                        title={it.contract?.title}
                       >
-                        Open Portal <ExternalLink size={12} />
-                      </a>
-                    ))}
-                  </td>
-                </tr>
-              ))}
+                        {it.contract?.title ?? '(deleted contract)'}
+                      </Link>
+                      <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-1.5">
+                        <span className="uppercase tracking-wide">{it.contract?.type?.replace(/_/g, ' ') ?? ''}</span>
+                        {it.contract?.counterpartyName && <span>· {it.contract.counterpartyName}</span>}
+                      </div>
+                    </td>
+                    <td className="px-5 py-3">
+                      <div className="text-xs text-gray-700">
+                        <div className="font-medium">{it.signedCount} / {it.totalSigners} signed</div>
+                        <div className="text-gray-500 mt-0.5 truncate max-w-[180px]">
+                          {it.signers.slice(0, 3).map(s => s.name).join(', ')}
+                          {it.signers.length > 3 && ` +${it.signers.length - 3}`}
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-5 py-3">
+                      <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border ${pill.bg} ${pill.fg}`}>
+                        <StatusIcon className="h-3.5 w-3.5" />
+                        {pill.label}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 text-xs text-gray-500">
+                      {relTime(it.createdAt)}
+                      {it.completedAt && (
+                        <div className="text-emerald-600 mt-0.5">
+                          done {relTime(it.completedAt)}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-5 py-3 text-right">
+                      {it.contract?.id && (
+                        <Link
+                          to={`/contracts/${it.contract.id}`}
+                          className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium"
+                        >
+                          Open
+                          <ArrowRight className="h-3.5 w-3.5" />
+                        </Link>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
-        )}
-      </div>
-
-      {/* New Request Modal */}
-      {showCreate && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
-            <h2 className="text-lg font-bold text-slate-800 mb-4">New Signature Request</h2>
-            <form onSubmit={handleCreate} className="flex flex-col gap-4">
-              <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1.5 block">Select Contract Document</label>
-                <select
-                  value={selectedContractId}
-                  onChange={e => setSelectedContractId(e.target.value)}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  required
-                >
-                  <option value="">Select contract...</option>
-                  {contracts.map(c => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1.5 block">Signer Full Name</label>
-                <input
-                  type="text"
-                  value={signerName}
-                  onChange={e => setSignerName(e.target.value)}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  placeholder="e.g. Jane Doe"
-                  required
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1.5 block">Signer Email</label>
-                <input
-                  type="email"
-                  value={signerEmail}
-                  onChange={e => setSignerEmail(e.target.value)}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                  placeholder="jane.doe@counterparty.com"
-                  required
-                />
-              </div>
-              <div className="flex gap-3 justify-end mt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowCreate(false)}
-                  className="text-sm text-slate-500 hover:text-slate-700 font-medium px-4 py-2"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={creating}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-6 py-2 rounded-lg transition-colors flex items-center gap-1.5"
-                >
-                  <FileSignature size={14} />
-                  {creating ? 'Sending...' : 'Send Request'}
-                </button>
-              </div>
-            </form>
-          </div>
         </div>
       )}
     </div>
-  );
+  )
 }

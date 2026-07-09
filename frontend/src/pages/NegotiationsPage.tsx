@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import api from '../lib/api.js';
+import { api } from '../lib/api.js';
 import {
   Plus,
   ExternalLink

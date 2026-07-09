@@ -25,6 +25,12 @@ import negotiationRouter from './routes/negotiation.routes.js';
 import graphRouter from './routes/graph.routes.js';
 import settingsRouter from './routes/settings.routes.js';
 import webhooksRouter from './routes/webhooks.routes.js';
+import invoicesRouter from './routes/invoices.routes.js';
+import renewalsRouter from './routes/renewals.routes.js';
+import requestsRouter from './routes/requests.routes.js';
+import templatesRouter from './routes/templates.routes.js';
+import organizationRouter from './routes/organization.routes.js';
+import adminRouter from './routes/admin.routes.js';
 
 dotenv.config({ override: true });
 
@@ -62,6 +68,13 @@ app.use('/api/v1/negotiations', negotiationRouter);
 app.use('/api/v1/graph', graphRouter);
 app.use('/api/v1/settings', settingsRouter);
 app.use('/api/v1/webhooks', webhooksRouter);
+app.use('/api/v1/invoices', invoicesRouter);
+app.use('/api/v1/renewals', renewalsRouter);
+app.use('/api/v1/requests', requestsRouter);
+app.use('/api/v1/templates', templatesRouter);
+app.use('/api/v1/organization', organizationRouter);
+app.use('/api/v1/admin', adminRouter);
+
 
 // Health check endpoint
 app.get('/health', (req, res) => {

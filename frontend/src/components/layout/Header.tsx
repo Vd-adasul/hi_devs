@@ -1,111 +1,175 @@
-import { useState, useEffect } from 'react';
-import { Bell, Sparkles } from 'lucide-react';
-import { useAuthStore } from '../../store/auth.js';
-import api from '../../lib/api.js';
+import { useState, useRef, useEffect } from 'react'
+import { Link } from 'react-router-dom'
+import { LogOut, User, ChevronDown, Search, Settings } from 'lucide-react'
+import { useAuthStore } from '@/store/auth'
+import { NotificationBell } from '@/components/approvals/NotificationBell'
+import { GlobalSearch } from '@/components/common/GlobalSearch'
 
-export function Header() {
-  const { user } = useAuthStore();
-  const [org, setOrg] = useState<any>(null);
-  const [showNotifications, setShowNotifications] = useState(false);
-  const [notifications, setNotifications] = useState<any[]>([]);
+// U.8 — derive a 1- or 2-letter avatar initial from the user's display
+// name. "Maya Goldberg" → "MG"; "alex" → "A"; "" → "?".
+function initialsOf(name?: string): string {
+  if (!name) return '?'
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return '?'
+  if (parts.length === 1) return parts[0]!.charAt(0).toUpperCase()
+  return (parts[0]!.charAt(0) + parts[parts.length - 1]!.charAt(0)).toUpperCase()
+}
 
+// U.4.3 — onChatToggle prop kept optional for back-compat with AppShell;
+// the "AI Assistant" pill it powered is deleted (doc 32 §11b item 7).
+interface HeaderProps {
+  onChatToggle?: () => void
+}
+
+export function Header(_props: HeaderProps) {
+  const { user, logout } = useAuthStore()
+  const [showUserMenu, setShowUserMenu] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // Close menu on outside click
   useEffect(() => {
-    const fetchOrgAndNotifs = async () => {
-      try {
-        const profileRes = await api.get('/auth/me');
-        setOrg(profileRes.data.organization);
-
-        // Simple mock notifications of events
-        setNotifications([
-          { id: 1, text: 'New counter-offer submitted for Tech Purchase SLA', time: '10m ago' },
-          { id: 2, text: 'Audit completed for NDA-Standard with score: 92%', time: '1h ago' },
-          { id: 3, text: 'Timeline alert: Renewal due in 6 days for Office Lease Agreement', time: '3h ago' },
-        ]);
-      } catch (err) {
-        console.warn('Failed to fetch org billing tier:', err);
+    function handleClickOutside(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setShowUserMenu(false)
       }
-    };
-
-    if (user) {
-      fetchOrgAndNotifs();
     }
-  }, [user]);
-
-  const getTierColor = (tier: string) => {
-    switch (tier?.toLowerCase()) {
-      case 'enterprise':
-        return 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-purple-400';
-      case 'pro':
-        return 'bg-gradient-to-r from-indigo-500 to-blue-500 text-white border-indigo-300';
-      default:
-        return 'bg-slate-100 text-slate-700 border-slate-300';
+    if (showUserMenu) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
     }
-  };
+  }, [showUserMenu])
+
+  // B.6.25 — global ⌘/ (or Ctrl-/) opens the navigate-palette. We
+  // pick the slash so we don't conflict with the contract-scoped
+  // ⌘K Ask AI palette.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === '/') {
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform)
 
   return (
-    <header className="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-6 shrink-0 relative">
-      {/* Left side: Greeting/Context */}
-      <div>
-        <h2 className="text-slate-800 font-semibold text-base">
-          Workspace Hub
-        </h2>
-        <p className="text-xs text-slate-400">
-          Organization: <span className="font-medium text-slate-600">{org?.name || 'Default Firm'}</span>
-        </p>
-      </div>
+    <header className="h-14 border-b border-border bg-card flex items-center justify-between px-6 shrink-0">
+      {/* B.6.25 — global search affordance (left side of header). Click
+          or press ⌘/ to open. Kept visually distinct from the AI
+          assistant so users don't conflate "find" with "ask". */}
+      <button
+        type="button"
+        onClick={() => setSearchOpen(true)}
+        data-testid="global-search-trigger"
+        className="inline-flex items-center gap-2 rounded-md border border-input bg-muted/40 px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors min-w-[16rem]"
+        aria-label="Open global search"
+      >
+        <Search className="h-3.5 w-3.5" />
+        <span className="flex-1 text-left">Search contracts, counterparties…</span>
+        <kbd className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]">
+          {isMac ? '⌘/' : 'Ctrl+/'}
+        </kbd>
+      </button>
+      <div className="flex items-center gap-2">
+        {/* U.4.3 — header agent-pill deleted. The right rail handles
+            its own expand/collapse; ⌘K from anywhere focuses the rail
+            composer; the sidebar Assistant link goes to /agent. */}
+        <NotificationBell />
 
-      {/* Right side: Tier, Notifications & Profile */}
-      <div className="flex items-center gap-4">
-        {/* Subscription Tier Badge */}
-        {org?.tier && (
-          <div className={`text-xs font-bold uppercase px-2.5 py-1 rounded-full border flex items-center gap-1 shadow-sm ${getTierColor(org.tier)}`}>
-            <Sparkles size={12} />
-            <span>{org.tier} Tier</span>
-          </div>
-        )}
-
-        {/* Notifications Icon & Tray */}
-        <div className="relative">
+        {/* User dropdown */}
+        <div className="relative ml-2" ref={menuRef}>
           <button
-            onClick={() => setShowNotifications(!showNotifications)}
-            className="p-1.5 rounded-full hover:bg-slate-100 text-slate-500 hover:text-slate-700 transition-colors"
+            onClick={() => setShowUserMenu(prev => !prev)}
+            data-testid="user-menu-trigger"
+            className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors rounded-full pl-1 pr-2 py-1 hover:bg-accent"
+            aria-label="Account menu"
           >
-            <Bell size={18} />
-            {notifications.length > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-indigo-600 rounded-full"></span>
-            )}
+            <span
+              aria-hidden
+              className="h-7 w-7 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-[11px] font-semibold tracking-wide ring-1 ring-indigo-200"
+            >
+              {initialsOf(user?.name)}
+            </span>
+            <span className="max-w-[8rem] truncate hidden sm:inline">{user?.name}</span>
+            <ChevronDown size={12} className="text-muted-foreground" />
           </button>
 
-          {showNotifications && (
-            <div className="absolute right-0 mt-2 w-80 bg-white rounded-lg border border-slate-200 shadow-lg py-2 z-50">
-              <div className="px-4 py-2 border-b border-slate-100 flex justify-between items-center">
-                <span className="font-semibold text-sm text-slate-800 font-inter">Recent Alerts</span>
-                <span className="text-xs text-indigo-600 font-medium hover:underline cursor-pointer">Mark all read</span>
+          {showUserMenu && (
+            <div
+              data-testid="user-menu"
+              className="absolute right-0 top-full mt-1.5 w-60 bg-card rounded-xl border border-border shadow-xl z-20 py-1 overflow-hidden"
+              role="menu"
+            >
+              {/* Identity block — answers "am I logged in as the right person?" */}
+              <div className="px-3 pt-3 pb-3 border-b border-border flex items-center gap-2.5">
+                <span
+                  aria-hidden
+                  className="h-9 w-9 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-semibold tracking-wide ring-1 ring-indigo-200 shrink-0"
+                >
+                  {initialsOf(user?.name)}
+                </span>
+                <div className="min-w-0">
+                  <p className="text-[13px] font-medium text-foreground truncate" data-testid="user-menu-name">
+                    {user?.name ?? 'Signed-in user'}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground truncate" data-testid="user-menu-email">
+                    {user?.email ?? ''}
+                  </p>
+                </div>
               </div>
-              <div className="max-h-60 overflow-y-auto">
-                {notifications.map((n) => (
-                  <div key={n.id} className="px-4 py-2 hover:bg-slate-50 cursor-pointer border-b border-slate-50">
-                    <p className="text-xs text-slate-700 font-inter leading-relaxed">{n.text}</p>
-                    <span className="text-[10px] text-slate-400 mt-1 block">{n.time}</span>
-                  </div>
-                ))}
+
+              <div className="py-1">
+                <Link
+                  to="/profile"
+                  onClick={() => setShowUserMenu(false)}
+                  data-testid="user-menu-profile"
+                  className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  role="menuitem"
+                >
+                  <User size={14} className="text-muted-foreground" />
+                  Profile
+                </Link>
+                <Link
+                  to="/settings"
+                  onClick={() => setShowUserMenu(false)}
+                  data-testid="user-menu-settings"
+                  className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  role="menuitem"
+                >
+                  <Settings size={14} className="text-muted-foreground" />
+                  Settings
+                </Link>
+              </div>
+
+              <div className="border-t border-border py-1">
+                <button
+                  onClick={() => {
+                    setShowUserMenu(false)
+                    // B.6.20 — logout is a deliberate action; after it
+                    // we always send the user to /login fresh (no next
+                    // param). Restore-URL only applies when the user
+                    // was forced out by token expiry.
+                    logout()
+                    window.location.href = '/login'
+                  }}
+                  data-testid="user-menu-logout"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-rose-600 hover:bg-rose-50 transition-colors"
+                  role="menuitem"
+                >
+                  <LogOut size={14} />
+                  Sign out
+                </button>
               </div>
             </div>
           )}
         </div>
-
-        {/* User Profile */}
-        <div className="flex items-center gap-2 border-l border-slate-200 pl-4">
-          <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-sm">
-            {user?.email?.charAt(0).toUpperCase()}
-          </div>
-          <div className="hidden md:block text-left">
-            <p className="text-xs font-semibold text-slate-700 font-inter leading-none">{user?.name || 'User'}</p>
-            <p className="text-[10px] text-slate-400 capitalize mt-0.5">{user?.role}</p>
-          </div>
-        </div>
       </div>
+
+      <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
     </header>
-  );
+  )
 }
-export default Header;

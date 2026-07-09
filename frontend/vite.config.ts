@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@clm/types': path.resolve(__dirname, './src/types/clm/index.ts'),
     },
   },
   server: {

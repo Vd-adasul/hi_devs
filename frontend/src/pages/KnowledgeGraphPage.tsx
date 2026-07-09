@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import api from '../lib/api.js';
+import { api } from '../lib/api.js';
 import { Network, Filter, RefreshCw, GitBranch } from 'lucide-react';
 
 interface GraphNode {

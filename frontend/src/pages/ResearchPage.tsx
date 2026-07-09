@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import api from '../lib/api.js';
+import { api } from '../lib/api.js';
 import {
   Search,
   BookOpen,

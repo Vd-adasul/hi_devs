@@ -1,116 +1,282 @@
-import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
-import { useAuthStore } from '../store/auth.js';
-import api from '../lib/api.js';
-import { Mail, Lock, Building, UserPlus } from 'lucide-react';
+/**
+ * RegisterPage — B.6.14 adds three enterprise-hygiene affordances:
+ *  - Password strength indicator (bar + label, updates live)
+ *  - Confirm-password field with inline mismatch warning
+ *  - Terms + Privacy checkbox, unchecked by default
+ *
+ * References: 1Password / Bitwarden (strength meter), GitHub / Stripe
+ * (confirm field), Notion / Linear / Vercel (terms checkbox).
+ *
+ * The strength scoring is intentionally simple — length + character-
+ * class variety — so the indicator reads deterministically without
+ * shipping a password-dict dependency.
+ */
+import { useMemo, useState } from 'react'
+import { useNavigate, Link } from 'react-router-dom'
+import { useAuthStore } from '@/store/auth'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { AlertCircle, CheckCircle2 } from 'lucide-react'
 
-export default function RegisterPage() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [orgName, setOrgName] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+// ─── Password strength (simple, deterministic) ────────────────────────────────
 
-  const login = useAuthStore((state: any) => state.login);
-  const navigate = useNavigate();
+interface Strength {
+  score: 0 | 1 | 2 | 3 | 4     // 0 = empty, 1 = weak, 4 = very strong
+  label: string
+  reasons: string[]            // what the user is missing — for hints
+}
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email || !password || !orgName) return;
-    setError('');
-    setLoading(true);
+function scorePassword(pw: string): Strength {
+  if (!pw) return { score: 0, label: '', reasons: [] }
 
+  let points = 0
+  const reasons: string[] = []
+
+  if (pw.length >= 8) points += 1
+  else reasons.push('at least 8 characters')
+
+  if (pw.length >= 12) points += 1
+  else if (pw.length >= 8) reasons.push('12+ characters for stronger')
+
+  if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) points += 1
+  else reasons.push('mixed upper + lower case')
+
+  if (/\d/.test(pw)) points += 1
+  else reasons.push('a number')
+
+  if (/[^A-Za-z0-9]/.test(pw)) points += 1
+  else reasons.push('a symbol')
+
+  // Map 0-5 raw points onto the 4-step bar
+  const score = Math.min(4, Math.max(1, Math.floor(points * 0.8))) as 1 | 2 | 3 | 4
+  const label = ['', 'Weak', 'Fair', 'Good', 'Strong'][score]
+  return { score, label, reasons }
+}
+
+const STRENGTH_COLORS = ['', 'bg-red-400', 'bg-amber-400', 'bg-emerald-400', 'bg-emerald-500']
+const STRENGTH_TEXT = ['', 'text-red-500', 'text-amber-600', 'text-emerald-600', 'text-emerald-700']
+
+// ─── Component ─────────────────────────────────────────────────────────────────
+
+export function RegisterPage() {
+  const navigate = useNavigate()
+  const register = useAuthStore((s) => s.register)
+
+  const [form, setForm] = useState({
+    orgName: '',
+    name: '',
+    email: '',
+    password: '',
+    confirmPassword: '',
+  })
+  const [termsAccepted, setTermsAccepted] = useState(false)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const strength = useMemo(() => scorePassword(form.password), [form.password])
+  const passwordsMatch =
+    form.password.length > 0 &&
+    form.confirmPassword.length > 0 &&
+    form.password === form.confirmPassword
+
+  const confirmMismatch =
+    form.confirmPassword.length > 0 && form.confirmPassword !== form.password
+
+  const canSubmit =
+    !!form.orgName.trim() &&
+    !!form.name.trim() &&
+    !!form.email.trim() &&
+    strength.score >= 2 && // ≥ Fair
+    passwordsMatch &&
+    termsAccepted &&
+    !loading
+
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    setForm((f) => ({ ...f, [e.target.name]: e.target.value }))
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!canSubmit) return
+    setError('')
+    setLoading(true)
     try {
-      const res = await api.post('/auth/register', { email, password, orgName });
-      login(res.data.token, res.data.user);
-      navigate('/dashboard');
-    } catch (err: any) {
-      setError(err.response?.data?.error || 'Registration failed.');
+      await register({
+        orgName: form.orgName,
+        name: form.name,
+        email: form.email,
+        password: form.password,
+      })
+      navigate('/dashboard')
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      setError(msg ?? 'Registration failed')
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
-  };
+  }
 
   return (
-    <div className="min-h-screen w-screen flex items-center justify-center bg-slate-950 px-4">
-      <div className="w-full max-w-md glass-panel flex flex-col gap-6">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold bg-gradient-to-r from-indigo-500 to-purple-500 bg-clip-text text-transparent">
-            Create Legal Workspace
-          </h2>
-          <p className="text-sm text-slate-400 mt-2">
-            Securely register your credentials to initialize LawyerOS
-          </p>
+    <div className="min-h-screen flex items-center justify-center bg-background py-10">
+      <div className="w-full max-w-sm space-y-6 p-8 border border-border rounded-lg bg-card shadow-sm">
+        <div>
+          <h1 className="text-2xl font-semibold text-foreground">Create account</h1>
+          <p className="text-sm text-muted-foreground mt-1">Set up your CLM workspace</p>
         </div>
 
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/50 text-red-500 text-xs py-2 px-3 rounded-lg text-center font-medium">
-            {error}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-slate-400 font-medium">Organization / Law Firm Name</label>
-            <div className="relative">
-              <Building className="absolute left-3 top-3 h-4.5 w-4.5 text-slate-400" />
-              <input
-                type="text"
-                value={orgName}
-                onChange={(e) => setOrgName(e.target.value)}
-                required
-                className="w-full bg-slate-900 border border-slate-700/60 rounded-lg py-2.5 pl-10 pr-4 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
-                placeholder="Apex Legal Associates"
-              />
-            </div>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="orgName">Company name</Label>
+            <Input
+              id="orgName"
+              name="orgName"
+              type="text"
+              required
+              autoComplete="organization"
+              value={form.orgName}
+              onChange={handleChange}
+              placeholder="Acme Corp"
+            />
           </div>
 
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-slate-400 font-medium">Email Address</label>
-            <div className="relative">
-              <Mail className="absolute left-3 top-3 h-4.5 w-4.5 text-slate-400" />
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                className="w-full bg-slate-900 border border-slate-700/60 rounded-lg py-2.5 pl-10 pr-4 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
-                placeholder="partner@firm.com"
-              />
-            </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="name">Your name</Label>
+            <Input
+              id="name"
+              name="name"
+              type="text"
+              required
+              autoComplete="name"
+              value={form.name}
+              onChange={handleChange}
+              placeholder="Jane Smith"
+            />
           </div>
 
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-slate-400 font-medium">Password</label>
-            <div className="relative">
-              <Lock className="absolute left-3 top-3 h-4.5 w-4.5 text-slate-400" />
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                className="w-full bg-slate-900 border border-slate-700/60 rounded-lg py-2.5 pl-10 pr-4 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
-                placeholder="••••••••"
-              />
-            </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              name="email"
+              type="email"
+              required
+              autoComplete="email"
+              value={form.email}
+              onChange={handleChange}
+              placeholder="jane@acme.com"
+            />
           </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full btn-primary justify-center py-2.5 mt-2 rounded-lg font-semibold flex items-center gap-2"
-          >
-            {loading ? 'Registering Workspace...' : <><UserPlus size={18} /> Register Account</>}
-          </button>
+          {/* Password + live strength indicator */}
+          <div className="space-y-1.5">
+            <Label htmlFor="password">Password</Label>
+            <Input
+              id="password"
+              name="password"
+              type="password"
+              required
+              minLength={8}
+              autoComplete="new-password"
+              value={form.password}
+              onChange={handleChange}
+              placeholder="••••••••"
+              aria-describedby="password-strength"
+            />
+            {form.password.length > 0 && (
+              <div id="password-strength" className="pt-1 space-y-1" data-testid="password-strength">
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 flex gap-1">
+                    {[1, 2, 3, 4].map((i) => (
+                      <div
+                        key={i}
+                        className={`h-1 flex-1 rounded-full transition-colors ${
+                          i <= strength.score ? STRENGTH_COLORS[strength.score] : 'bg-muted'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                  <span className={`text-xs font-medium tabular-nums ${STRENGTH_TEXT[strength.score]}`}>
+                    {strength.label}
+                  </span>
+                </div>
+                {strength.score < 3 && strength.reasons.length > 0 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Add: {strength.reasons.slice(0, 3).join(' · ')}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Confirm password */}
+          <div className="space-y-1.5">
+            <Label htmlFor="confirmPassword">Confirm password</Label>
+            <Input
+              id="confirmPassword"
+              name="confirmPassword"
+              type="password"
+              required
+              minLength={8}
+              autoComplete="new-password"
+              value={form.confirmPassword}
+              onChange={handleChange}
+              placeholder="••••••••"
+              data-testid="confirm-password"
+              aria-invalid={confirmMismatch}
+              aria-describedby={confirmMismatch ? 'confirm-mismatch' : undefined}
+              className={confirmMismatch ? 'border-red-400 focus-visible:ring-red-400' : undefined}
+            />
+            {confirmMismatch ? (
+              <p id="confirm-mismatch" className="flex items-center gap-1 text-xs text-red-500">
+                <AlertCircle className="h-3 w-3" />
+                Passwords don&rsquo;t match
+              </p>
+            ) : passwordsMatch ? (
+              <p className="flex items-center gap-1 text-xs text-emerald-600">
+                <CheckCircle2 className="h-3 w-3" />
+                Passwords match
+              </p>
+            ) : null}
+          </div>
+
+          {/* Terms + privacy */}
+          <label className="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={termsAccepted}
+              onChange={(e) => setTermsAccepted(e.target.checked)}
+              data-testid="terms-checkbox"
+              className="mt-0.5 h-3.5 w-3.5 rounded border-input text-primary focus:ring-primary"
+              required
+            />
+            <span className="leading-snug">
+              I agree to the{' '}
+              <a href="/terms" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                Terms of Service
+              </a>{' '}
+              and{' '}
+              <a href="/privacy" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                Privacy Policy
+              </a>
+              .
+            </span>
+          </label>
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <Button type="submit" className="w-full" disabled={!canSubmit}>
+            {loading ? 'Creating…' : 'Create account'}
+          </Button>
         </form>
 
-        <div className="text-center text-xs text-slate-400">
-          Already registered?{' '}
-          <Link to="/login" className="text-indigo-400 hover:text-indigo-300 font-semibold hover:underline">
-            Login here
+        <p className="text-sm text-center text-muted-foreground">
+          Already have an account?{' '}
+          <Link to="/login" className="text-primary hover:underline">
+            Sign in
           </Link>
-        </div>
+        </p>
       </div>
     </div>
-  );
+  )
 }

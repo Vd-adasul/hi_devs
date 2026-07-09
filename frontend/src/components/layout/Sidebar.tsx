@@ -1,207 +1,362 @@
-import { useState, useEffect } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react'
+import { NavLink } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { cn } from '@/lib/utils'
+import { api } from '@/lib/api'
+import { Wordmark } from '@/components/brand/Wordmark'
 import {
-  Briefcase,
+  LayoutDashboard,
   FileText,
-  CheckSquare,
-  Users,
-  Compass,
-  FileCheck,
-  Settings,
-  ChevronLeft,
-  ChevronRight,
-  LogOut,
-  Bell,
-  MessageSquare,
-  Calendar,
-  Layers,
-  Webhook,
-  Network,
+  ClipboardList,
+  Library,
+  BookOpen,
   Shield,
-  FileSignature,
-  BarChart2
-} from 'lucide-react';
-import { useAuthStore } from '../../store/auth.js';
-import api from '../../lib/api.js';
+  CheckSquare,
+  Building2,
+  Settings,
+  Users,
+  UsersRound,
+  ShieldCheck,
+  Sparkles,
+  Briefcase,
+  PenSquare,
+  ListTodo,
+  CalendarDays,
+  Receipt,
+  BarChart2,
+  FolderOpen,
+  Plug,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Compass,
+  Webhook,
+} from 'lucide-react'
+import { usePermission } from '@/lib/permissions'
+import type { LucideIcon } from 'lucide-react'
+
+// ─── Nav structure ─────────────────────────────────────────────────────────────
+
+interface NavSection {
+  label?: string
+  items: Array<{
+    to: string
+    icon: LucideIcon
+    label: string
+    // P7.4.9 / F-14 — explicit `staticBadge` keeps "Soon" UX-only
+    // (no API hit). Use `badge` for runtime counts as before.
+    badge?: 'pendingApprovals' | 'openRequests'
+    staticBadge?: 'soon'
+  }>
+}
+
+// IA principle: each section answers a single user question.
+//   • (top, no label) — "Where do I start?"
+//   • Workspace        — "What am I working ON?"  (the nouns)
+//   • Queues           — "What needs my action right now?"
+//   • Post-signature   — "What happens AFTER signing?"
+//   • Library          — "What reusable assets do I reference?"
+//   • Insights         — "How is the portfolio performing?"
+//
+// Extraction Queue (/review-queue) was demoted out of the sidebar —
+// it's an internal AI-confidence-review tool with low daily-use
+// frequency. Surfaced contextually via Contracts list badges instead.
+// Route still exists; bookmarks + deep links unaffected.
+const NAV_SECTIONS: NavSection[] = [
+  {
+    items: [
+      { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+      // P7.3.2 — Genspark-style full-screen agent surface. Lives at
+      // the top of the nav alongside Dashboard so the user can pick:
+      // operational view (queues, KPIs) vs conversational view (chat).
+      { to: '/agent',     icon: Sparkles,        label: 'Assistant' },
+    ],
+  },
+  {
+    // The work objects — the nouns the user manipulates daily.
+    label: 'Workspace',
+    items: [
+      { to: '/matters',        icon: Briefcase,     label: 'Matters' },
+      { to: '/contracts',      icon: FileText,      label: 'Contracts' },
+      { to: '/requests',       icon: ClipboardList,  label: 'Requests', badge: 'openRequests' },
+      { to: '/counterparties', icon: Building2,      label: 'Counterparties' },
+    ],
+  },
+  {
+    // Things needing user action — both have queues that drain to zero.
+    label: 'Queues',
+    items: [
+      { to: '/approvals',    icon: CheckSquare, label: 'Approvals', badge: 'pendingApprovals' },
+      // Phase 07 — Signatures promoted once the eSignature flow shipped.
+      { to: '/signatures',   icon: PenSquare,   label: 'Signatures' },
+    ],
+  },
+  {
+    // Phase 08 — what we track on EXECUTED contracts.
+    label: 'Post-signature',
+    items: [
+      { to: '/obligations',  icon: ListTodo,     label: 'Obligations' },
+      { to: '/renewals',     icon: CalendarDays, label: 'Renewals' },
+      { to: '/invoices',     icon: Receipt,      label: 'Invoices' },
+    ],
+  },
+  {
+    // Reusable drafting assets — the lawyer's reference shelf.
+    label: 'Library',
+    items: [
+      { to: '/templates',    icon: Library,  label: 'Templates' },
+      { to: '/clauses',      icon: BookOpen, label: 'Clauses' },
+      { to: '/playbook',     icon: Shield,   label: 'Playbook' },
+      { to: '/research',     icon: Compass,  label: 'Statutory Research' },
+    ],
+  },
+  {
+    // Phase 09 — cross-portfolio analysis.
+    label: 'Insights',
+    items: [
+      { to: '/analytics',    icon: BarChart2,  label: 'Analytics' },
+      // Diligence Rooms — bulk M&A contract review (Harvey Vault eq).
+      { to: '/diligence',    icon: FolderOpen, label: 'Diligence' },
+    ],
+  },
+]
+
+const BADGE_STYLES: Record<string, string> = {
+  pendingApprovals: 'bg-blue-100 text-blue-700',
+  openRequests:     'bg-amber-100 text-amber-700',
+}
+
+// ─── Component ─────────────────────────────────────────────────────────────────
+
+const ADMIN_SECTION: NavSection = {
+  label: 'Admin',
+  items: [
+    { to: '/admin/users',  icon: Users,       label: 'Users' },
+    { to: '/admin/roles',  icon: ShieldCheck, label: 'Roles' },
+    { to: '/admin/org',    icon: Building2,   label: 'Organization' },
+    { to: '/admin/integrations', icon: Plug,  label: 'Integrations' },
+    { to: '/admin/skills', icon: Sparkles,    label: 'Skills' },
+    { to: '/team',         icon: UsersRound,  label: 'Team' },
+    { to: '/developer',    icon: Webhook,     label: 'Developers & Webhooks' },
+  ],
+}
 
 export function Sidebar() {
-  const [isCollapsed, setIsCollapsed] = useState(false);
-  const [matters, setMatters] = useState<any[]>([]);
-  const [selectedMatterId, setSelectedMatterId] = useState<string>('');
-  const [badges, setBadges] = useState({ approvals: 0, reviewQueue: 0, obligations: 0 });
+  const canAdmin = usePermission('configure', 'user')
 
-  const { user, logout } = useAuthStore();
-  const location = useLocation();
-  const navigate = useNavigate();
+  const { data: stats } = useQuery<{
+    pendingApprovals: number
+    openRequests: number
+  }>({
+    queryKey: ['dashboard-stats'],
+    queryFn: () => api.get('/dashboard').then((r) => r.data),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  })
 
-  // Load matters and badge counts
-  const loadSidebarData = async () => {
-    try {
-      // 1. Fetch matters list
-      const matRes = await api.get('/matters');
-      setMatters(matRes.data.data || []);
-      if (matRes.data.data && matRes.data.data.length > 0 && !selectedMatterId) {
-        setSelectedMatterId(matRes.data.data[0]._id);
-      }
+  const badgeCounts: Record<string, number> = {
+    pendingApprovals: stats?.pendingApprovals ?? 0,
+    openRequests:     stats?.openRequests ?? 0,
+  }
 
-      // 2. Fetch pending counts
-      const appRes = await api.get('/approvals/instances/queue');
-      const revRes = await api.get('/review-queue?status=pending');
-      const oblRes = await api.get('/obligations?status=pending');
-
-      setBadges({
-        approvals: appRes.data.data?.length || 0,
-        reviewQueue: revRes.data.data?.length || 0,
-        obligations: oblRes.data.data?.length || 0,
-      });
-    } catch (err) {
-      console.warn('Failed to load sidebar metrics:', err);
-    }
-  };
+  // U.7 — sidebar auto-collapses to icon-only below lg (1024px). On
+  // top of that, P10 added a manual toggle (button + Cmd/Ctrl+\) so
+  // power users on wide screens can reclaim horizontal space. State
+  // persists in localStorage so the choice survives reload.
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return localStorage.getItem('draftlegal:sidebar-collapsed') === '1'
+  })
 
   useEffect(() => {
-    if (user) {
-      loadSidebarData();
-      const interval = setInterval(loadSidebarData, 60000); // refresh every 60s
-      return () => clearInterval(interval);
-    }
-  }, [user]);
-
-  // Keyboard shortcut Ctrl+\ to collapse sidebar
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === '\\') {
-        setIsCollapsed(prev => !prev);
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
+        e.preventDefault()
+        setCollapsed(c => {
+          const next = !c
+          try { localStorage.setItem('draftlegal:sidebar-collapsed', next ? '1' : '0') } catch {/*ignore*/}
+          return next
+        })
       }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
-  const menuItems = [
-    { name: 'Dashboard', path: '/dashboard', icon: Layers },
-    { name: 'Matters Twin', path: `/matters/${selectedMatterId || 'new'}`, icon: Briefcase },
-    { name: 'Contracts Playbook', path: '/playbook', icon: FileCheck },
-    { name: 'Contracts Index', path: '/contracts', icon: FileText },
-    { name: 'Knowledge Graph', path: '/graph', icon: Network },
-    { name: 'Virtual Diligence', path: '/diligence', icon: Shield },
-    { name: 'E-Signatures', path: '/signatures', icon: FileSignature },
-    { name: 'Approvals Queue', path: '/approvals', icon: CheckSquare, badge: badges.approvals },
-    { name: 'Human Review Queue', path: '/review-queue', icon: Bell, badge: badges.reviewQueue },
-    { name: 'Obligations Timeline', path: '/obligations', icon: Calendar, badge: badges.obligations },
-    { name: 'Counterparty Directory', path: '/counterparties', icon: Users },
-    { name: 'Negotiation Engine', path: '/negotiations', icon: MessageSquare },
-    { name: 'Statutory Research', path: '/research', icon: Compass },
-    { name: 'Contract Playbook Compliance', path: '/draft', icon: FileText },
-    { name: 'Analytics & Performance', path: '/analytics', icon: BarChart2 },
-    { name: 'Developers & Webhooks', path: '/developer', icon: Webhook },
-    { name: 'System Configuration', path: '/settings', icon: Settings },
-  ];
+  const toggle = () => {
+    setCollapsed(c => {
+      const next = !c
+      try { localStorage.setItem('draftlegal:sidebar-collapsed', next ? '1' : '0') } catch {/*ignore*/}
+      return next
+    })
+  }
+
+  // When manually collapsed, override the lg: classes that would
+  // normally show labels on wide screens. Helpers keep the markup
+  // readable — `showLabel` is "show full label", `hideMobile` is
+  // "treat as collapsed".
+  const showLabel  = collapsed ? 'hidden' : 'hidden lg:inline'
+  const showLabelB = collapsed ? 'hidden' : 'hidden lg:block'
+  const showLabelF = collapsed ? 'hidden' : 'hidden lg:flex'
+  const showLabelI = collapsed ? 'hidden' : 'hidden lg:inline-flex'
+  const showMark   = collapsed ? 'inline'  : 'lg:hidden'
+  const layoutCls  = collapsed
+    ? 'justify-center'
+    : 'justify-center lg:justify-start'
 
   return (
-    <div
-      className={`h-screen flex flex-col bg-slate-900 text-slate-100 transition-all duration-300 ${
-        isCollapsed ? 'w-16' : 'w-64'
-      } border-r border-slate-800 shrink-0`}
-    >
-      {/* Sidebar Header Logo */}
-      <div className="h-16 flex items-center justify-between px-4 border-b border-slate-800">
-        {!isCollapsed && (
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-lg text-white">
-              L
-            </div>
-            <span className="font-semibold text-lg tracking-wider text-white">LawyerOS</span>
-          </div>
-        )}
-        {isCollapsed && (
-          <div className="w-8 h-8 mx-auto rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-lg text-white">
-            L
-          </div>
-        )}
-        <button
-          onClick={() => setIsCollapsed(!isCollapsed)}
-          className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-100 hidden md:block"
-          title="Toggle Sidebar (Ctrl+\\)"
-        >
-          {isCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-        </button>
-      </div>
-
-      {/* Workspace Matter Selector */}
-      {!isCollapsed && matters.length > 0 && (
-        <div className="p-3 border-b border-slate-800">
-          <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-            Active Matter Scope
-          </label>
-          <select
-            value={selectedMatterId}
-            onChange={(e) => {
-              setSelectedMatterId(e.target.value);
-              navigate(`/matters/${e.target.value}`);
-            }}
-            className="w-full text-sm bg-slate-800 text-slate-100 rounded border border-slate-700 py-1.5 px-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-          >
-            {matters.map((m: any) => (
-              <option key={m._id} value={m._id}>
-                {m.name}
-              </option>
-            ))}
-          </select>
-        </div>
+    <aside
+      data-testid="app-sidebar"
+      data-collapsed={collapsed ? 'true' : 'false'}
+      className={cn(
+        'border-r border-border bg-card flex flex-col shrink-0 transition-[width] duration-150',
+        collapsed ? 'w-14' : 'w-14 lg:w-60',
       )}
-
-      {/* Menu Links */}
-      <div className="flex-1 overflow-y-auto py-4 space-y-1">
-        {menuItems.map((item) => {
-          const isActive = location.pathname.startsWith(item.path.split('/:')[0]);
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.name}
-              to={item.path}
-              className={`flex items-center justify-between px-4 py-2 text-sm font-medium transition-colors ${
-                isActive
-                  ? 'bg-indigo-600 text-white'
-                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-              }`}
-              title={isCollapsed ? item.name : ''}
-            >
-              <div className="flex items-center gap-3">
-                <Icon size={18} className={isActive ? 'text-white' : 'text-slate-400'} />
-                {!isCollapsed && <span>{item.name}</span>}
-              </div>
-              {!isCollapsed && item.badge && item.badge > 0 ? (
-                <span className="bg-red-500 text-white text-xs px-2 py-0.5 rounded-full font-bold">
-                  {item.badge}
-                </span>
-              ) : null}
-            </Link>
-          );
-        })}
+    >
+      {/*
+        B.6.13 — logo is a link to /dashboard. Matches the 25-year web
+        convention (Notion, Linear, Figma, every other web app) so the
+        user's muscle-memory "click the logo to go home" works.
+      */}
+      <div className={cn(
+        'h-14 flex items-center border-b border-border',
+        collapsed ? 'justify-center' : 'justify-center lg:justify-start lg:px-5',
+      )}>
+        <NavLink
+          to="/dashboard"
+          data-testid="logo-home-link"
+          aria-label="draftLegal — go to dashboard"
+          title="draftLegal — Dashboard"
+          className="hover:opacity-80 transition-opacity focus:outline-none focus:ring-2 focus:ring-emerald-500/40 rounded"
+        >
+          <span className={showMark}><Wordmark size="xl" kind="mark" /></span>
+          <span className={showLabel}><Wordmark size="2xl" kind="full" /></span>
+        </NavLink>
       </div>
 
-      {/* Sidebar Footer User Section */}
-      <div className="p-4 border-t border-slate-800 flex flex-col gap-2">
-        {!isCollapsed && (
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center font-bold text-slate-200">
-              {user?.email?.charAt(0).toUpperCase()}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold truncate text-white">{user?.name || user?.email}</p>
-              <p className="text-xs text-slate-400 uppercase tracking-wide truncate">{user?.role}</p>
+      {/* Nav */}
+      <nav className={cn('flex-1 py-2 overflow-y-auto', collapsed ? 'px-2' : 'px-2 lg:px-3')}>
+        {[...NAV_SECTIONS, ...(canAdmin ? [ADMIN_SECTION] : [])].map((section, i) => (
+          <div key={i} className="mb-1">
+            {section.label && (
+              <p className={cn('px-3 pt-4 pb-1.5 text-[10px] font-bold text-muted-foreground/50 uppercase tracking-widest', showLabelB)}>
+                {section.label}
+              </p>
+            )}
+            <div className="space-y-0.5">
+              {section.items.map(({ to, icon: Icon, label, badge, staticBadge }) => {
+                const count = badge ? badgeCounts[badge] : 0
+                // U.2.1 / decision 14a — Assistant gets the indigo accent;
+                // every other route stays on the product blue.
+                const isAssistant = to === '/agent'
+                // U13 — coming-soon items shouldn't be reachable via keyboard
+                // tab order or screen-reader navigation; the nav stays in DOM
+                // for visual context but is not interactive.
+                const isComingSoon = staticBadge === 'soon'
+                return (
+                  <NavLink
+                    key={to}
+                    to={to}
+                    data-testid={isComingSoon
+                      ? `nav-${to.replace(/^\//, '').replace(/\//g, '-')}-coming-soon`
+                      : `nav-${to.replace(/^\//, '').replace(/\//g, '-')}`}
+                    aria-disabled={isComingSoon || undefined}
+                    tabIndex={isComingSoon ? -1 : undefined}
+                    onClick={isComingSoon ? (e) => e.preventDefault() : undefined}
+                    title={label}
+                    className={({ isActive }) =>
+                      cn(
+                        'flex items-center gap-3 py-2 rounded-md text-sm font-medium transition-colors relative',
+                        layoutCls,
+                        collapsed ? 'px-2' : 'px-2 lg:px-3',
+                        isActive
+                          ? isAssistant
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-primary text-primary-foreground'
+                          : isAssistant
+                            ? 'text-indigo-700 hover:bg-indigo-50'
+                            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                      )
+                    }
+                  >
+                    <Icon size={16} className="shrink-0" />
+                    <span className={cn('flex-1', showLabel)}>{label}</span>
+                    {badge && count > 0 && (
+                      <span className={cn(
+                        'h-5 min-w-5 items-center justify-center rounded-full text-xs font-semibold px-1.5',
+                        showLabelF,
+                        BADGE_STYLES[badge],
+                      )}>
+                        {count > 99 ? '99+' : count}
+                      </span>
+                    )}
+                    {/* Compact badge dot on collapsed sidebar so users still see "there's something here" */}
+                    {badge && count > 0 && (
+                      <span
+                        aria-hidden
+                        className={cn(
+                          'absolute top-1 right-1 h-2 w-2 rounded-full',
+                          collapsed ? 'inline' : 'lg:hidden',
+                          badge === 'pendingApprovals' ? 'bg-blue-500' : 'bg-amber-500',
+                        )}
+                      />
+                    )}
+                    {staticBadge === 'soon' && (
+                      <span
+                        data-testid={`badge-soon-${to.replace(/^\//, '')}`}
+                        className={cn('text-[9.5px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200', showLabelI)}
+                      >
+                        Soon
+                      </span>
+                    )}
+                  </NavLink>
+                )
+              })}
             </div>
           </div>
-        )}
-        <button
-          onClick={logout}
-          className="w-full flex items-center gap-3 px-3 py-2 text-sm font-medium text-red-400 hover:bg-red-950/20 hover:text-red-300 rounded transition-colors mt-2"
+        ))}
+      </nav>
+
+      {/* Settings + collapse toggle at bottom */}
+      <div className={cn('border-t border-border space-y-0.5', collapsed ? 'p-2' : 'p-2 lg:p-3')}>
+        <NavLink
+          to="/settings"
+          title="Settings"
+          className={({ isActive }) =>
+            cn(
+              'flex items-center gap-3 py-2 rounded-md text-sm font-medium transition-colors',
+              layoutCls,
+              collapsed ? 'px-2' : 'px-2 lg:px-3',
+              isActive
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+            )
+          }
         >
-          <LogOut size={16} />
-          {!isCollapsed && <span>Sign Out</span>}
+          <Settings size={16} className="shrink-0" />
+          <span className={showLabel}>Settings</span>
+        </NavLink>
+        {/* Collapse toggle — visible only on lg+ since narrower viewports
+            are auto-collapsed already and the button would be confusing.
+            Cmd/Ctrl+\ keyboard shortcut works at any width. */}
+        <button
+          type="button"
+          onClick={toggle}
+          data-testid="sidebar-collapse-toggle"
+          aria-label={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
+          title={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
+          className={cn(
+            'hidden lg:flex w-full items-center gap-3 py-2 rounded-md text-xs font-medium text-muted-foreground/70 hover:bg-accent hover:text-accent-foreground transition-colors',
+            layoutCls,
+            collapsed ? 'px-2' : 'px-2 lg:px-3',
+          )}
+        >
+          {collapsed
+            ? <PanelLeftOpen size={16} className="shrink-0" />
+            : <PanelLeftClose size={16} className="shrink-0" />}
+          <span className={showLabel}>Collapse</span>
+          <span className={cn('ml-auto text-[10px] font-mono opacity-60', showLabel)}>⌘\</span>
         </button>
       </div>
-    </div>
-  );
+    </aside>
+  )
 }

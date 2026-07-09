@@ -1,153 +1,400 @@
-import { useState, useEffect } from 'react';
-import api from '../lib/api.js';
+/**
+ * AnalyticsPage — executive dashboard (Phase 09 Step 1).
+ *
+ * Replaces the prior "Coming Soon" stub with a real KPI dashboard:
+ * headline KPIs, contract status pie, contract type bar, risk
+ * distribution, monthly volume trend, top counterparties by ACV.
+ *
+ * Backed by /api/v1/analytics/* endpoints. Each KPI card is clickable
+ * — drills into the Contracts list pre-filtered (Step 3 will wire
+ * the filter params on /contracts).
+ */
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import {
-  TrendingUp,
-  AlertTriangle,
-  Clock,
-  ShieldCheck,
-  BarChart2,
-  FileText
-} from 'lucide-react';
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
+  Cell, LineChart, Line, CartesianGrid, Legend,
+} from 'recharts'
+import { api } from '@/lib/api'
+import {
+  BarChart2, FileText, CheckCircle2, AlertTriangle, CalendarClock,
+  Loader2, TrendingUp, ArrowRight, Sparkles, Building2, Clock,
+} from 'lucide-react'
 
-export default function AnalyticsPage() {
-  const [stats, setStats] = useState({
-    totalMatters: 0,
-    totalDocuments: 0,
-    pendingApprovals: 0,
-    completedObligations: 0,
-    totalObligations: 0,
-    highRisks: 0,
-    mediumRisks: 0,
-    lowRisks: 0,
-  });
+interface ApiSummary {
+  totalContracts:    number
+  executedContracts: number
+  pendingApprovals:  number
+  expiringSoon:      number
+  highRiskOpen:      number
+  executedTotalValue: number
+  executedTotalCurrency: string
+  cycleTimeAvgDays:    number | null
+  cycleTimeMedianDays: number | null
+  approvalAcceptanceRate: number | null
+  onTimeExecutionRate:    number | null
+  withinTargetDays:        number
+  windowDays:              number
+}
 
-  const loadAnalytics = async () => {
-    try {
-      const matRes = await api.get('/matters');
-      const matters = matRes.data.data || [];
-      const appRes = await api.get('/approvals/instances/queue');
-      const oblRes = await api.get('/obligations');
-      const obligations = oblRes.data.data || [];
+interface ApiDistributions {
+  byStatus: { key: string; count: number }[]
+  byType:   { key: string; count: number }[]
+  byRisk:   { key: string; count: number; label: string }[]
+}
 
-      // Fetch risks from one of the matters
-      let high = 0, med = 0, low = 0;
-      for (const m of matters.slice(0, 5)) {
-        try {
-          const docRes = await api.get(`/matters/${m._id}/documents`);
-          (docRes.data.documents || []).forEach((d: any) => {
-            (d.risks || []).forEach((r: any) => {
-              if (r.risk_level === 'high') high++;
-              else if (r.risk_level === 'medium') med++;
-              else low++;
-            });
-          });
-        } catch {}
-      }
+interface ApiTimeseries {
+  series: { month: string; label: string; created: number; executed: number }[]
+}
 
-      setStats({
-        totalMatters: matters.length,
-        totalDocuments: matters.length * 2, // estimate
-        pendingApprovals: appRes.data.data?.length || 0,
-        completedObligations: obligations.filter((o: any) => o.status === 'completed').length,
-        totalObligations: obligations.length,
-        highRisks: high || 2,
-        mediumRisks: med || 4,
-        lowRisks: low || 5,
-      });
-    } catch (err) {
-      console.warn('Failed to load analytics:', err);
-    }
-  };
+interface ApiTopCps {
+  data: { counterparty: string; counterpartyId: string | null; count: number; value: number; currency: string }[]
+}
 
-  useEffect(() => {
-    loadAnalytics();
-  }, []);
+function formatMoney(n: number, currency = 'USD'): string {
+  if (n >= 1_000_000) return `${currency} ${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000)     return `${currency} ${(n / 1_000).toFixed(0)}K`
+  return `${currency} ${n.toFixed(0)}`
+}
+function formatPct(p: number | null): string {
+  if (p == null) return '—'
+  return `${Math.round(p * 100)}%`
+}
+function formatDays(d: number | null): string {
+  if (d == null) return '—'
+  if (d < 1) return '<1d'
+  return `${d.toFixed(1)}d`
+}
+
+const STATUS_COLOR: Record<string, string> = {
+  DRAFT:               '#94a3b8',  // slate-400
+  PENDING_REVIEW:      '#a78bfa',  // violet-400
+  UNDER_NEGOTIATION:   '#fb923c',  // orange-400
+  PENDING_APPROVAL:    '#facc15',  // yellow-400
+  APPROVED:            '#34d399',  // emerald-400
+  PENDING_SIGNATURE:   '#fbbf24',  // amber-400
+  EXECUTED:            '#10b981',  // emerald-500
+  EXPIRED:             '#ef4444',  // red-500
+  TERMINATED:          '#dc2626',  // red-600
+  ARCHIVED:            '#9ca3af',  // gray-400
+}
+
+const RISK_COLOR: Record<string, string> = {
+  low:      '#10b981',
+  medium:   '#fbbf24',
+  high:     '#f97316',
+  critical: '#dc2626',
+  none:     '#cbd5e1',
+}
+
+export function AnalyticsPage() {
+  const [windowDays, setWindowDays] = useState(90)
+
+  const { data: summary, isLoading: summaryLoading } = useQuery<ApiSummary>({
+    queryKey: ['analytics-summary', windowDays],
+    queryFn:  () => api.get(`/analytics/summary?days=${windowDays}`).then(r => r.data),
+    refetchInterval: 60_000,
+  })
+  const { data: dists } = useQuery<ApiDistributions>({
+    queryKey: ['analytics-distributions'],
+    queryFn:  () => api.get('/analytics/distributions').then(r => r.data),
+  })
+  const { data: ts } = useQuery<ApiTimeseries>({
+    queryKey: ['analytics-timeseries'],
+    queryFn:  () => api.get('/analytics/timeseries').then(r => r.data),
+  })
+  const { data: tops } = useQuery<ApiTopCps>({
+    queryKey: ['analytics-top-cps'],
+    queryFn:  () => api.get('/analytics/top-counterparties?limit=10').then(r => r.data),
+  })
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Firm Performance &amp; Analytics</h1>
-        <p className="text-sm text-slate-500 mt-1">Audit metrics, risk density maps, and workflow velocity tracking</p>
+    <div className="px-6 py-6 max-w-7xl mx-auto" data-testid="analytics-page">
+      <div className="flex items-center justify-between mb-1 gap-4">
+        <div className="flex items-center gap-3">
+          <BarChart2 className="h-5 w-5 text-blue-600" />
+          <h1 className="text-2xl font-semibold text-gray-900">Analytics</h1>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500">Window:</span>
+          <select
+            value={windowDays}
+            onChange={e => setWindowDays(Number(e.target.value))}
+            data-testid="analytics-window"
+            className="text-sm border border-gray-200 rounded-md px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400"
+          >
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+            <option value={180}>Last 180 days</option>
+            <option value={365}>Last year</option>
+          </select>
+        </div>
+      </div>
+      <p className="text-sm text-gray-500 mb-5">
+        Portfolio KPIs, cycle time, and contract distribution at a glance.
+      </p>
+
+      {/* KPI strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
+        <KpiCard
+          label="Total contracts"
+          value={summary?.totalContracts ?? 0}
+          icon={FileText}
+          tone="blue"
+          to="/contracts"
+          loading={summaryLoading}
+          data-testid="kpi-total"
+        />
+        <KpiCard
+          label="Executed"
+          value={summary?.executedContracts ?? 0}
+          icon={CheckCircle2}
+          tone="emerald"
+          subtitle={summary ? formatMoney(summary.executedTotalValue, summary.executedTotalCurrency) + ' total' : ''}
+          to="/contracts?status=EXECUTED"
+          loading={summaryLoading}
+          data-testid="kpi-executed"
+        />
+        <KpiCard
+          label="Pending approvals"
+          value={summary?.pendingApprovals ?? 0}
+          icon={Clock}
+          tone="amber"
+          to="/approvals"
+          loading={summaryLoading}
+          data-testid="kpi-approvals"
+        />
+        <KpiCard
+          label="Expiring (90d)"
+          value={summary?.expiringSoon ?? 0}
+          icon={CalendarClock}
+          tone="orange"
+          to="/renewals?bucket=next_90"
+          loading={summaryLoading}
+          data-testid="kpi-expiring"
+        />
+        <KpiCard
+          label="High risk + open"
+          value={summary?.highRiskOpen ?? 0}
+          icon={AlertTriangle}
+          tone="red"
+          to="/contracts?riskBand=high"
+          loading={summaryLoading}
+          data-testid="kpi-high-risk"
+        />
       </div>
 
-      {/* Metric Highlights */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        {[
-          { label: 'Risk Density', value: `${(stats.highRisks / (stats.totalDocuments || 1) * 100).toFixed(0)}%`, icon: AlertTriangle, color: 'text-red-600 bg-red-50 border-red-100', desc: 'High risk clauses per doc' },
-          { label: 'Approval Speed', value: '1.8 Days', icon: Clock, color: 'text-indigo-600 bg-indigo-50 border-indigo-100', desc: 'Average workflow turnaround' },
-          { label: 'Obligation Health', value: `${(stats.completedObligations / (stats.totalObligations || 1) * 100).toFixed(0)}%`, icon: ShieldCheck, color: 'text-emerald-600 bg-emerald-50 border-emerald-100', desc: 'Obligations met on schedule' },
-          { label: 'Active Contracts', value: stats.totalDocuments, icon: FileText, color: 'text-blue-600 bg-blue-50 border-blue-100', desc: 'Documents compiled in twin' },
-        ].map(stat => (
-          <div key={stat.label} className="bg-white border border-slate-200 shadow-sm p-6 rounded-xl flex items-center justify-between">
-            <div>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{stat.label}</p>
-              <h3 className="text-2xl font-bold text-slate-800 mt-2">{stat.value}</h3>
-              <p className="text-[10px] text-slate-400 mt-1">{stat.desc}</p>
-            </div>
-            <div className={`p-3 rounded-lg border ${stat.color}`}>
-              <stat.icon size={20} />
-            </div>
-          </div>
-        ))}
+      {/* KPIs row 2: time-based metrics */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+        <MetricBar
+          label="Cycle time"
+          value={formatDays(summary?.cycleTimeAvgDays ?? null)}
+          subtitle={`Median ${formatDays(summary?.cycleTimeMedianDays ?? null)} · over last ${summary?.windowDays ?? 90} days`}
+          icon={TrendingUp}
+          tone="blue"
+        />
+        <MetricBar
+          label="Approval acceptance"
+          value={formatPct(summary?.approvalAcceptanceRate ?? null)}
+          subtitle="Approved ÷ (Approved + Rejected)"
+          icon={CheckCircle2}
+          tone="emerald"
+        />
+        <MetricBar
+          label="On-time execution"
+          value={formatPct(summary?.onTimeExecutionRate ?? null)}
+          subtitle={`% executed within ${summary?.withinTargetDays ?? 14}d of creation`}
+          icon={Sparkles}
+          tone="purple"
+        />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Risk Breakdown Card */}
-        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 flex flex-col gap-4">
-          <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2 border-b border-slate-100 pb-2">
-            <BarChart2 size={16} className="text-indigo-500" />
-            Clause Risk Distribution
-          </h3>
-          <div className="flex flex-col gap-4 py-4">
-            {[
-              { label: 'High Risk Clauses', count: stats.highRisks, color: 'bg-red-500', percent: stats.highRisks / (stats.highRisks + stats.mediumRisks + stats.lowRisks || 1) * 100 },
-              { label: 'Medium Risk Clauses', count: stats.mediumRisks, color: 'bg-amber-500', percent: stats.mediumRisks / (stats.highRisks + stats.mediumRisks + stats.lowRisks || 1) * 100 },
-              { label: 'Low Risk Clauses', count: stats.lowRisks, color: 'bg-emerald-500', percent: stats.lowRisks / (stats.highRisks + stats.mediumRisks + stats.lowRisks || 1) * 100 },
-            ].map(r => (
-              <div key={r.label} className="flex flex-col gap-1.5">
-                <div className="flex justify-between text-xs font-semibold text-slate-600">
-                  <span>{r.label}</span>
-                  <span>{r.count} ({r.percent.toFixed(0)}%)</span>
-                </div>
-                <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-                  <div className={`h-full rounded-full ${r.color}`} style={{ width: `${r.percent}%` }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Charts row 1 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <ChartCard title="Monthly contract volume" data-testid="chart-volume">
+          <ResponsiveContainer width="100%" height={250}>
+            <LineChart data={ts?.series ?? []}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+              <Tooltip />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Line type="monotone" dataKey="created"  stroke="#3b82f6" strokeWidth={2} name="Created" />
+              <Line type="monotone" dataKey="executed" stroke="#10b981" strokeWidth={2} name="Executed" />
+            </LineChart>
+          </ResponsiveContainer>
+        </ChartCard>
 
-        {/* Workflow Pipeline */}
-        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 flex flex-col gap-4 lg:col-span-2">
-          <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2 border-b border-slate-100 pb-2">
-            <TrendingUp size={16} className="text-indigo-500" />
-            Active Pipeline Velocity
+        <ChartCard title="Status distribution" data-testid="chart-status">
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart
+              data={(dists?.byStatus ?? []).map(s => ({ name: s.key.replace(/_/g, ' '), count: s.count, key: s.key }))}
+              layout="vertical"
+              margin={{ left: 100, right: 20 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} domain={[0, 'dataMax']} />
+              <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={90} />
+              <Tooltip />
+              <Bar dataKey="count" name="Contracts" isAnimationActive={false}>
+                {(dists?.byStatus ?? []).map((s, i) => (
+                  <Cell key={i} fill={STATUS_COLOR[s.key] ?? '#9ca3af'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      </div>
+
+      {/* Charts row 2 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        <ChartCard title="Risk distribution" data-testid="chart-risk">
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={dists?.byRisk ?? []} layout="vertical" margin={{ left: 80 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
+              <YAxis type="category" dataKey="label" tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="count" name="Contracts">
+                {(dists?.byRisk ?? []).map((r, i) => (
+                  <Cell key={i} fill={RISK_COLOR[r.key] ?? '#9ca3af'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard title="Contract types" data-testid="chart-types">
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={(dists?.byType ?? []).slice(0, 10)} layout="vertical" margin={{ left: 80 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+              <XAxis type="number" tick={{ fontSize: 11 }} allowDecimals={false} />
+              <YAxis type="category" dataKey="key" tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="count" fill="#6366f1" name="Contracts" />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      </div>
+
+      {/* Top counterparties */}
+      <div className="bg-white border border-gray-200 rounded-xl overflow-hidden mb-6">
+        <header className="flex items-center justify-between px-5 py-3 border-b border-gray-200 bg-gray-50">
+          <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+            <Building2 className="h-4 w-4 text-blue-600" />
+            Top counterparties by executed value
           </h3>
-          <div className="grid grid-cols-3 gap-4 py-4 text-center">
-            <div className="p-4 border border-slate-100 rounded-xl bg-slate-50/30">
-              <h4 className="text-3xl font-extrabold text-slate-800">{stats.totalMatters}</h4>
-              <p className="text-xs font-semibold text-slate-500 mt-1">Matters Active</p>
-              <div className="w-full bg-slate-200 h-1 rounded-full mt-3 overflow-hidden">
-                <div className="bg-indigo-600 h-full w-[70%]" />
-              </div>
-            </div>
-            <div className="p-4 border border-slate-100 rounded-xl bg-slate-50/30">
-              <h4 className="text-3xl font-extrabold text-slate-800">{stats.pendingApprovals}</h4>
-              <p className="text-xs font-semibold text-slate-500 mt-1">Pending Approval</p>
-              <div className="w-full bg-slate-200 h-1 rounded-full mt-3 overflow-hidden">
-                <div className="bg-amber-500 h-full w-[40%]" />
-              </div>
-            </div>
-            <div className="p-4 border border-slate-100 rounded-xl bg-slate-50/30">
-              <h4 className="text-3xl font-extrabold text-slate-800">{stats.completedObligations}</h4>
-              <p className="text-xs font-semibold text-slate-500 mt-1">Obligations Met</p>
-              <div className="w-full bg-slate-200 h-1 rounded-full mt-3 overflow-hidden">
-                <div className="bg-emerald-500 h-full w-[85%]" />
-              </div>
-            </div>
-          </div>
-        </div>
+        </header>
+        {!tops?.data?.length ? (
+          <div className="text-sm text-gray-500 px-5 py-8 text-center">No executed contracts yet.</div>
+        ) : (
+          <table className="w-full text-sm" data-testid="top-counterparties-table">
+            <thead className="text-xs uppercase text-gray-500">
+              <tr>
+                <th className="text-left px-5 py-2 font-medium">Counterparty</th>
+                <th className="text-right px-5 py-2 font-medium">Contracts</th>
+                <th className="text-right px-5 py-2 font-medium">Total ACV</th>
+                <th className="text-right px-5 py-2 font-medium"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {tops.data.map(cp => (
+                <tr key={cp.counterparty} className="hover:bg-gray-50">
+                  <td className="px-5 py-2.5 font-medium text-gray-900">{cp.counterparty}</td>
+                  <td className="px-5 py-2.5 text-right text-gray-700 tabular-nums">{cp.count}</td>
+                  <td className="px-5 py-2.5 text-right font-medium text-gray-900 tabular-nums">{formatMoney(cp.value, cp.currency)}</td>
+                  <td className="px-5 py-2.5 text-right">
+                    {cp.counterpartyId ? (
+                      <Link
+                        to={`/contracts?counterpartyId=${encodeURIComponent(cp.counterpartyId)}&filterLabel=${encodeURIComponent(cp.counterparty)}`}
+                        className="inline-flex items-center gap-0.5 text-xs text-blue-600 hover:text-blue-700"
+                      >
+                        View <ArrowRight className="h-3 w-3" />
+                      </Link>
+                    ) : (
+                      <span className="text-xs text-gray-400">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
-  );
+  )
+}
+
+function KpiCard({ label, value, subtitle, icon: Icon, tone, to, loading, ...rest }: {
+  label:    string
+  value:    number
+  subtitle?: string
+  icon:     React.ComponentType<{ className?: string }>
+  tone:     'blue' | 'emerald' | 'amber' | 'orange' | 'red'
+  to?:      string
+  loading?: boolean
+  'data-testid'?: string
+}) {
+  const tones = {
+    blue:    'text-blue-700 bg-blue-50',
+    emerald: 'text-emerald-700 bg-emerald-50',
+    amber:   'text-amber-700 bg-amber-50',
+    orange:  'text-orange-700 bg-orange-50',
+    red:     'text-red-700 bg-red-50',
+  }[tone]
+  const card = (
+    <div className="border border-gray-200 rounded-xl p-3 bg-white hover:shadow-sm transition-shadow" {...rest}>
+      <div className="flex items-start justify-between">
+        <div className="text-xs text-gray-500">{label}</div>
+        <div className={`h-6 w-6 rounded-md flex items-center justify-center ${tones}`}>
+          <Icon className="h-3.5 w-3.5" />
+        </div>
+      </div>
+      <div className="text-2xl font-semibold mt-1 tabular-nums text-gray-900">
+        {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-300" /> : value}
+      </div>
+      {subtitle && <div className="text-[10.5px] text-gray-500 mt-0.5 truncate">{subtitle}</div>}
+    </div>
+  )
+  return to ? <Link to={to} className="block">{card}</Link> : card
+}
+
+function MetricBar({ label, value, subtitle, icon: Icon, tone }: {
+  label:    string
+  value:    string
+  subtitle: string
+  icon:     React.ComponentType<{ className?: string }>
+  tone:     'blue' | 'emerald' | 'purple'
+}) {
+  const valueClass = {
+    blue:    'text-blue-700',
+    emerald: 'text-emerald-700',
+    purple:  'text-purple-700',
+  }[tone]
+  return (
+    <div className="border border-gray-200 rounded-xl p-3 bg-white flex items-center gap-3">
+      <div className="h-9 w-9 rounded-lg bg-gray-50 flex items-center justify-center text-gray-600">
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs text-gray-500">{label}</div>
+        <div className={`text-xl font-semibold tabular-nums ${valueClass}`}>{value}</div>
+        <div className="text-[10.5px] text-gray-500 truncate">{subtitle}</div>
+      </div>
+    </div>
+  )
+}
+
+function ChartCard({ title, children, ...rest }: {
+  title:    string
+  children: React.ReactNode
+  'data-testid'?: string
+}) {
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4" {...rest}>
+      <h3 className="text-sm font-semibold text-gray-900 mb-3">{title}</h3>
+      {children}
+    </div>
+  )
 }

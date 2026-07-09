@@ -1,273 +1,223 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
-import api from '../lib/api.js';
+/**
+ * MatterDetailPage (P4.2 / docs/30 D.7.2 + D.7.3)
+ *
+ * Workspace for a single matter — sidebar list of the matter's
+ * contracts + requests + threads, with a title header showing
+ * metadata + status toggle.
+ */
+import { useState } from 'react'
+import { useParams, Link } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { api } from '@/lib/api'
+import { Button } from '@/components/ui/button'
 import {
-  Upload,
-  AlertTriangle
-} from 'lucide-react';
-import { VoiceInput } from '../components/common/VoiceInput.js';
-import { VoiceOutput } from '../components/common/VoiceOutput.js';
+  Briefcase, FileText, ClipboardList, MessageSquare, ArrowLeft,
+  Archive, CheckCircle2,
+} from 'lucide-react'
 
-export default function MatterDetailPage() {
-  const { id } = useParams();
-  const [matter, setMatter] = useState<any>(null);
-  const [documents, setDocuments] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'twin' | 'qa' | 'conflicts'>('twin');
-  const [uploading, setUploading] = useState(false);
-  const [log, setLog] = useState('');
-  
-  // Chat state
-  const [query, setQuery] = useState('');
-  const [messages, setMessages] = useState<any[]>([]);
-  const [chatLoading, setChatLoading] = useState(false);
+interface Detail {
+  id: string
+  name: string
+  description: string | null
+  status: 'OPEN' | 'CLOSED' | 'ARCHIVED'
+  counterpartyId: string | null
+  counterpartyName: string | null
+  owner: { id: string; name: string; email: string; avatarUrl: string | null } | null
+  counterparty: { id: string; name: string; website: string | null } | null
+  tags: string[]
+  contracts: Array<{
+    id: string; title: string; type: string; status: string
+    value: number | null; currency: string | null; riskScore: number | null
+    counterpartyName: string | null; effectiveDate: string | null; expiryDate: string | null
+    updatedAt: string
+  }>
+  requests: Array<{
+    id: string; requestNumber: string | null; title: string; type: string
+    status: string; priority: string; counterpartyName: string | null
+    createdAt: string
+  }>
+  threads: Array<{
+    id: string; title: string; scopeType: string | null; scopeId: string | null
+    userId: string; updatedAt: string
+  }>
+  createdAt: string
+  updatedAt: string
+  closedAt: string | null
+}
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+export function MatterDetailPage() {
+  const qc = useQueryClient()
+  const { id } = useParams<{ id: string }>()
+  const [tab, setTab] = useState<'contracts' | 'requests' | 'threads'>('contracts')
 
-  const loadMatterState = async () => {
-    try {
-      const matRes = await api.get(`/matters`);
-      const matched = matRes.data.data?.find((m: any) => m._id === id);
-      setMatter(matched);
+  const { data, isLoading } = useQuery({
+    queryKey: ['matter', id],
+    enabled: !!id,
+    queryFn: async () => (await api.get<Detail>(`/matters/${id}`)).data,
+  })
 
-      const docRes = await api.get(`/matters/${id}/documents`);
-      setDocuments(docRes.data.documents || []);
-    } catch (err) {
-      console.warn('Failed to load matter state:', err);
-    }
-  };
+  const close = useMutation({
+    mutationFn: () => api.patch(`/matters/${id}`, { status: 'CLOSED' }).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['matter', id] }),
+  })
+  const archive = useMutation({
+    mutationFn: () => api.patch(`/matters/${id}`, { status: 'ARCHIVED' }).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['matter', id] }),
+  })
+  const reopen = useMutation({
+    mutationFn: () => api.patch(`/matters/${id}`, { status: 'OPEN' }).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['matter', id] }),
+  })
 
-  useEffect(() => {
-    if (id) {
-      loadMatterState();
-    }
-  }, [id]);
-
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setUploading(true);
-    setLog('Parsing document and checking for scanned PDF triggers...');
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      await api.post(`/matters/${id}/documents?name=${encodeURIComponent(file.name)}`, arrayBuffer, {
-        headers: { 'Content-Type': 'application/pdf' },
-      });
-      setLog('Document structured and indexed in Qdrant & Neo4j databases successfully!');
-      loadMatterState();
-    } catch (err: any) {
-      setLog(`Error: ${err.response?.data?.error || err.message}`);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleAskQuestion = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!query) return;
-    setChatLoading(true);
-
-    const userMsg = { id: Date.now().toString(), sender: 'user', text: query };
-    setMessages(prev => [...prev, userMsg]);
-    const activeQuery = query;
-    setQuery('');
-
-    try {
-      const res = await api.post(`/matters/${id}/qa`, { query: activeQuery });
-      const assistantMsg = {
-        id: (Date.now() + 1).toString(),
-        sender: 'assistant',
-        text: res.data.answer,
-        sources: res.data.sources || [],
-        citationVerifications: res.data.citationVerifications || [],
-        trust: res.data._trust,
-      };
-      setMessages(prev => [...prev, assistantMsg]);
-    } catch (err: any) {
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), sender: 'assistant', text: 'Error executing Hybrid Graph RAG check.' }]);
-    } finally {
-      setChatLoading(false);
-    }
-  };
+  if (isLoading || !data) {
+    return <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+  }
 
   return (
-    <div className="flex flex-col gap-6">
-      {/* Title Header */}
-      <div className="flex justify-between items-center glass-panel bg-white border border-slate-200 shadow-sm p-6 rounded-xl">
-        <div>
-          <h1 className="text-xl font-bold text-slate-800">{matter?.name || 'Loading Matter Twin...'}</h1>
-          <p className="text-xs text-slate-500 mt-1">Client: <span className="font-semibold">{matter?.client_name || 'N/A'}</span></p>
+    <div className="px-6 py-5 max-w-6xl mx-auto" data-testid="matter-detail-page">
+      <Link to="/matters" className="inline-flex items-center gap-1 text-[12px] text-muted-foreground hover:text-gray-900 mb-3">
+        <ArrowLeft className="h-3 w-3" /> Matters
+      </Link>
+      <div className="flex items-start justify-between mb-4">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
+            <Briefcase className="h-4 w-4 text-indigo-600" />
+            {data.name}
+            <span className={
+              'text-[10px] uppercase tracking-wider font-medium rounded px-1.5 py-0.5 border ' +
+              (data.status === 'OPEN'     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : data.status === 'CLOSED' ? 'bg-gray-50 text-gray-600 border-gray-200'
+                :                            'bg-amber-50 text-amber-700 border-amber-200')
+            }>{data.status}</span>
+          </h1>
+          <div className="text-[12px] text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
+            {data.counterpartyName && <span>Counterparty: <span className="text-gray-900">{data.counterpartyName}</span></span>}
+            {data.owner && <span>· Owner: <span className="text-gray-900">{data.owner.name}</span></span>}
+            {data.tags.map(t => <span key={t} className="font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5">#{t}</span>)}
+          </div>
+          {data.description && <p className="text-[12px] text-gray-700 mt-2 max-w-3xl">{data.description}</p>}
         </div>
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="btn-primary flex items-center gap-2 rounded-lg text-sm font-semibold"
-          disabled={uploading}
-        >
-          <Upload size={16} />
-          {uploading ? 'Processing...' : 'Upload PDF'}
-        </button>
-        <input type="file" ref={fileInputRef} onChange={handleUpload} className="hidden" accept="application/pdf" />
+        <div className="flex items-center gap-1.5">
+          {data.status === 'OPEN' ? (
+            <>
+              <Button
+                variant="outline" size="sm"
+                onClick={() => close.mutate()}
+                data-testid="matter-close-btn"
+                className="gap-1 text-[12px]"
+              >
+                <CheckCircle2 className="h-3 w-3" /> Close
+              </Button>
+              <Button
+                variant="outline" size="sm"
+                onClick={() => archive.mutate()}
+                data-testid="matter-archive-btn"
+                className="gap-1 text-[12px]"
+              >
+                <Archive className="h-3 w-3" /> Archive
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" onClick={() => reopen.mutate()} data-testid="matter-reopen-btn" className="gap-1 text-[12px]">
+              Reopen
+            </Button>
+          )}
+        </div>
       </div>
 
-      {log && (
-        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-mono p-3 rounded-lg">
-          {log}
-        </div>
+      <div className="flex items-center border-b border-border gap-4 text-[13px] mb-3">
+        {[
+          { k: 'contracts', label: 'Contracts', icon: FileText,    count: data.contracts.length },
+          { k: 'requests',  label: 'Requests',  icon: ClipboardList, count: data.requests.length },
+          { k: 'threads',   label: 'Threads',   icon: MessageSquare, count: data.threads.length },
+        ].map(t => {
+          const Icon = t.icon
+          const active = tab === t.k
+          return (
+            <button
+              key={t.k}
+              onClick={() => setTab(t.k as typeof tab)}
+              data-testid={`matter-tab-${t.k}`}
+              className={cn(
+                'relative flex items-center gap-1.5 py-2 border-b-2 transition-colors',
+                active
+                  ? 'text-gray-900 border-indigo-500 font-medium'
+                  : 'text-muted-foreground border-transparent hover:text-gray-900',
+              )}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {t.label}
+              <span className="text-[10.5px] tabular-nums opacity-70">{t.count}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {tab === 'contracts' && (
+        <ul className="divide-y divide-border border border-border rounded-lg bg-card overflow-hidden" data-testid="matter-tab-contracts-body">
+          {data.contracts.length === 0 && <EmptyRow text="No contracts in this matter yet. Open a contract and assign it via the Matter picker in its header." />}
+          {data.contracts.map(c => (
+            <li key={c.id}>
+              <Link to={`/contracts/${c.id}`} className="block px-4 py-2 hover:bg-muted/40">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium text-[12.5px] text-gray-900 truncate">{c.title}</span>
+                  <span className="text-[10.5px] uppercase tracking-wider text-muted-foreground font-mono">{c.type}</span>
+                  <span className={cn(
+                    'text-[10px] uppercase tracking-wider rounded px-1.5 py-0.5 border',
+                    c.status === 'EXECUTED' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                    c.status === 'DRAFT' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                    'bg-gray-50 text-gray-600 border-gray-200',
+                  )}>{c.status}</span>
+                  {c.value != null && <span className="text-[11px] text-muted-foreground">{(c.currency ?? '$')}{Number(c.value).toLocaleString()}</span>}
+                  {c.riskScore != null && <span className="text-[10.5px] text-amber-700">risk {(c.riskScore * 100).toFixed(0)}%</span>}
+                </div>
+              </Link>
+            </li>
+          ))}
+        </ul>
       )}
 
-      {/* Main Grid Content split */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Left Col: Uploaded documents list */}
-        <div className="glass-panel bg-white border border-slate-200 shadow-sm rounded-xl p-4 flex flex-col gap-4">
-          <h3 className="text-sm font-semibold text-slate-800 border-b border-slate-100 pb-2">Document Index</h3>
-          <div className="flex flex-col gap-2">
-            {documents.map((d: any) => (
-              <div key={d._id} className="p-3 border border-slate-100 rounded-lg hover:bg-slate-50/50 transition-colors">
-                <h4 className="text-xs font-bold text-slate-700 truncate">{d.name}</h4>
-                <div className="flex justify-between text-[10px] text-slate-400 mt-1">
-                  <span>{(d.file_size / 1024).toFixed(1)} KB</span>
-                  <span>Version {d.version}</span>
-                </div>
+      {tab === 'requests' && (
+        <ul className="divide-y divide-border border border-border rounded-lg bg-card overflow-hidden" data-testid="matter-tab-requests-body">
+          {data.requests.length === 0 && <EmptyRow text="No intake requests linked to this matter." />}
+          {data.requests.map(r => (
+            <li key={r.id} className="px-4 py-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-mono text-[10.5px] text-muted-foreground">{r.requestNumber ?? r.id.slice(-6)}</span>
+                <span className="font-medium text-[12.5px] text-gray-900 truncate">{r.title}</span>
+                <span className="text-[10.5px] text-muted-foreground">· {r.status} · {r.priority}</span>
               </div>
-            ))}
-            {documents.length === 0 && (
-              <p className="text-xs text-slate-400 text-center py-6">No files uploaded yet.</p>
-            )}
-          </div>
-        </div>
+            </li>
+          ))}
+        </ul>
+      )}
 
-        {/* Right Col: Workspace twin state & Chat QA console */}
-        <div className="md:col-span-2 glass-panel bg-white border border-slate-200 shadow-sm rounded-xl p-6 flex flex-col gap-4 min-h-[450px]">
-          {/* Navigation tab menu */}
-          <div className="flex border-b border-slate-200 gap-4">
-            <button
-              onClick={() => setActiveTab('twin')}
-              className={`pb-2 text-sm font-semibold border-b-2 transition-colors ${
-                activeTab === 'twin' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              Living Matter Twin
-            </button>
-            <button
-              onClick={() => setActiveTab('qa')}
-              className={`pb-2 text-sm font-semibold border-b-2 transition-colors ${
-                activeTab === 'qa' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              Hybrid Graph RAG Chat
-            </button>
-            <button
-              onClick={() => setActiveTab('conflicts')}
-              className={`pb-2 text-sm font-semibold border-b-2 transition-colors ${
-                activeTab === 'conflicts' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              Conflicts ({matter?.conflicts?.length || 0})
-            </button>
-          </div>
-
-          {/* TAB 1: Living Twin State Active Clauses */}
-          {activeTab === 'twin' && (
-            <div className="flex flex-col gap-4 max-h-96 overflow-y-auto pr-2">
-              {matter?.livingState?.mergedClauses?.map((c: any, idx: number) => (
-                <div key={idx} className="p-4 border border-slate-100 rounded-lg bg-slate-50/40">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded">
-                      {c.category}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-700 leading-relaxed font-sans">{c.text}</p>
-                </div>
-              ))}
-              {(!matter?.livingState?.mergedClauses || matter.livingState.mergedClauses.length === 0) && (
-                <p className="text-xs text-slate-400 text-center py-12">No active clauses compiled. Upload documents to assemble living state.</p>
-              )}
-            </div>
-          )}
-
-          {/* TAB 2: Hybrid Graph RAG chat console */}
-          {activeTab === 'qa' && (
-            <div className="flex flex-col gap-4 h-full">
-              {/* Message scroll list */}
-              <div className="flex-1 overflow-y-auto max-h-80 border border-slate-100 rounded-lg p-4 bg-slate-50/30 flex flex-col gap-3">
-                {messages.map((msg) => (
-                  <div key={msg.id} className={`flex flex-col max-w-[80%] ${msg.sender === 'user' ? 'self-end' : 'self-start'}`}>
-                    <div className={`p-3 rounded-lg text-xs leading-relaxed ${
-                      msg.sender === 'user' ? 'bg-indigo-600 text-white font-sans' : 'bg-white border border-slate-200 text-slate-800'
-                    }`}>
-                      {msg.text}
-                    </div>
-
-                    {msg.sender === 'assistant' && (
-                      <div className="flex items-center gap-4 mt-2">
-                        <VoiceOutput text={msg.text} label="Listen to Answer" />
-                        {msg.trust && (
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                            msg.trust.safe ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
-                          }`}>
-                            Enkrypt Trust: {(msg.trust.score * 100).toFixed(0)}%
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))}
-                {chatLoading && (
-                  <div className="text-xs text-slate-400 flex items-center gap-2">
-                    <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-slate-400"></div>
-                    Traversing Neo4j citations and vector indexes...
-                  </div>
-                )}
+      {tab === 'threads' && (
+        <ul className="divide-y divide-border border border-border rounded-lg bg-card overflow-hidden" data-testid="matter-tab-threads-body">
+          {data.threads.length === 0 && <EmptyRow text="No agent threads linked to this matter yet." />}
+          {data.threads.map(t => (
+            <li key={t.id} className="px-4 py-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <MessageSquare className="h-3 w-3 text-muted-foreground" />
+                <span className="text-[12.5px] text-gray-900 truncate">{t.title}</span>
+                <span className="text-[10.5px] text-muted-foreground">· last activity {new Date(t.updatedAt).toLocaleDateString()}</span>
               </div>
-
-              {/* Chat Form with Voice Button */}
-              <form onSubmit={handleAskQuestion} className="flex gap-2">
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  className="flex-1 bg-white border border-slate-200 rounded-lg px-4 py-2 text-xs focus:outline-none focus:border-indigo-500"
-                  placeholder="Ask a question about the matter contract state..."
-                />
-                <VoiceInput onTranscript={(t) => setQuery(prev => `${prev} ${t}`)} />
-                <button type="submit" className="btn-primary rounded-lg text-xs py-2 px-4 font-semibold">
-                  Ask AI
-                </button>
-              </form>
-            </div>
-          )}
-
-          {/* TAB 3: Auto-merged Conflict warnings */}
-          {activeTab === 'conflicts' && (
-            <div className="flex flex-col gap-4 max-h-96 overflow-y-auto">
-              {matter?.conflicts?.map((conf: any, idx: number) => (
-                <div key={idx} className="p-4 border border-red-100 bg-red-50/20 rounded-lg flex flex-col gap-2">
-                  <div className="flex items-center gap-2 text-red-700 font-semibold text-xs">
-                    <AlertTriangle size={14} />
-                    <span>Conflict in Category: {conf.category}</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 text-xs mt-1">
-                    <div>
-                      <span className="font-semibold text-slate-400 block">Existing Position:</span>
-                      <p className="text-slate-600 mt-1 italic">"{conf.existingClauseText}"</p>
-                    </div>
-                    <div>
-                      <span className="font-semibold text-slate-400 block">Incoming Amendment Proposal:</span>
-                      <p className="text-slate-600 mt-1 italic">"{conf.incomingClauseText}"</p>
-                    </div>
-                  </div>
-                  <div className="border-t border-slate-100 pt-2 text-xs text-slate-500 mt-1 leading-relaxed">
-                    <strong>AI Recommendation:</strong> {conf.recommendation} ({conf.reason})
-                  </div>
-                </div>
-              ))}
-              {(!matter?.conflicts || matter.conflicts.length === 0) && (
-                <p className="text-xs text-slate-400 text-center py-12">No active conflicts detected on the Matter twin state.</p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
-  );
+  )
+}
+
+function EmptyRow({ text }: { text: string }) {
+  return (
+    <li className="px-4 py-8 text-center text-[12px] text-muted-foreground italic">
+      {text}
+    </li>
+  )
+}
+
+function cn(...c: Array<string | null | undefined | false>): string {
+  return c.filter(Boolean).join(' ')
 }
