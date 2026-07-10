@@ -20,6 +20,99 @@ const pdfHighlightService = PdfHighlightService.getInstance();
 const versionDiffService = VersionDiffService.getInstance();
 const matterTwinService = MatterTwinService.getInstance();
 
+// Background document processor (async - does not block the HTTP response)
+async function processDocumentInBackground(
+  orgId: string,
+  matterId: string,
+  documentId: string,
+  fileName: string,
+  pdfBuffer: Buffer,
+  rawText: string,
+  pageCount: number,
+  userId: string
+) {
+  const docsCollection = await dbService.getCollection('documents') as any;
+  const clausesCollection = await dbService.getCollection('clauses');
+  const mattersCollection = await dbService.getCollection('matters');
+
+  try {
+    console.log(`[BG] Starting Mastra Workflow for document: ${documentId}`);
+    const run = await documentWorkflow.createRun();
+    const workflowRes = await run.start({
+      inputData: { orgId, matterId, documentId, rawText, pageCount },
+    });
+
+    if (workflowRes.status === 'failed') {
+      throw new Error((workflowRes as any).error?.message || 'Workflow execution failed');
+    }
+
+    // Retrieve the extracted clauses (stored by the workflow steps)
+    const extractedClauses = await clausesCollection.find({ document_id: new ObjectId(documentId) }).toArray();
+
+    // Create Clause nodes in Neo4j (fix: use raw_text not text)
+    console.log(`[BG] Mapping ${extractedClauses.length} clauses to Neo4j graph...`);
+    for (const cl of extractedClauses) {
+      await neo4jService.createClauseNode(
+        cl._id.toString(),
+        documentId,
+        cl.category || 'General',
+        cl.raw_text || '',  // FIX: was cl.text (wrong field)
+        cl.risk_level || 'low'
+      );
+    }
+
+    // Compute PDF highlight bounding boxes
+    let enrichedHighlights: any[] = [];
+    try {
+      const pagesTextPositions = await pdfHighlightService.getTextPositions(pdfBuffer);
+      enrichedHighlights = pdfHighlightService.enrichHighlights(pagesTextPositions, extractedClauses);
+    } catch (hlErr) {
+      console.error('[BG] Failed to compute PDF highlights:', hlErr);
+    }
+
+    // Mark document as completed
+    await docsCollection.updateOne(
+      { _id: new ObjectId(documentId) },
+      { $set: { status: 'completed', raw_text: rawText, highlights: enrichedHighlights } }
+    );
+
+    // Matter Twin: Auto-merge & conflict detection
+    try {
+      const allDocs = await docsCollection.find({ matter_id: new ObjectId(matterId) }).toArray();
+      if (allDocs.length > 1) {
+        const otherDocs = allDocs.filter((d: any) => d._id.toString() !== documentId);
+        const otherDocIds = otherDocs.map((d: any) => d._id);
+        const existingClauses = await clausesCollection.find({ document_id: { $in: otherDocIds } }).toArray();
+
+        const twinResult = await matterTwinService.detectConflictsAndMerge(
+          existingClauses.map(ec => ({ id: ec._id.toString(), text: ec.raw_text || '', category: ec.category || 'General', documentId: ec.document_id.toString() })),
+          extractedClauses.map(ic => ({ text: ic.raw_text || '', category: ic.category || 'General', documentId })),
+          documentId
+        );
+        await mattersCollection.updateOne(
+          { _id: new ObjectId(matterId) },
+          { $set: { livingState: { mergedClauses: twinResult.mergedClauses, supersededClauses: twinResult.supersededClauses, lastMergedAt: new Date() }, conflicts: twinResult.conflictingClauses } }
+        );
+      } else {
+        await mattersCollection.updateOne(
+          { _id: new ObjectId(matterId) },
+          { $set: { livingState: { mergedClauses: extractedClauses.map(c => ({ text: c.raw_text || '', category: c.category || 'General', sourceDocId: documentId })), supersededClauses: [], lastMergedAt: new Date() }, conflicts: [] } }
+        );
+      }
+    } catch (twinErr) {
+      console.error('[BG] Matter Twin failed:', twinErr);
+    }
+
+    console.log(`[BG] Document ${documentId} processing complete.`);
+  } catch (err: any) {
+    console.error(`[BG] Background processing failed for document ${documentId}:`, err);
+    await docsCollection.updateOne(
+      { _id: new ObjectId(documentId) },
+      { $set: { status: 'failed', processingError: err.message } }
+    );
+  }
+}
+
 // Upload PDF document to Matter and process it
 router.post('/:matterId/documents', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   const { matterId } = req.params;
@@ -34,18 +127,38 @@ router.post('/:matterId/documents', authMiddleware, async (req: AuthenticatedReq
   try {
     // 1. Verify Matter exists
     const mattersCollection = await dbService.getCollection('matters');
-    const matter = await mattersCollection.findOne({
-      _id: new ObjectId(matterId),
-      org_id: orgId,
-    });
+    const matter = await mattersCollection.findOne({ _id: new ObjectId(matterId), org_id: orgId });
+    if (!matter) return res.status(404).json({ error: 'Matter not found' });
 
-    if (!matter) {
-      return res.status(404).json({ error: 'Matter not found' });
+    const docsCollection = await dbService.getCollection('documents') as any;
+
+    // ✅ IDEMPOTENCY CHECK: if document with same name in this matter is already completed, return existing
+    const existingDoc = await docsCollection.findOne({
+      matter_id: new ObjectId(matterId),
+      org_id: orgId,
+      name: fileName,
+      status: 'completed',
+    });
+    if (existingDoc) {
+      console.log(`[Idempotency] Document '${fileName}' already processed (id: ${existingDoc._id}). Returning cached result.`);
+      const clausesCollection = await dbService.getCollection('clauses');
+      const cachedClauses = await clausesCollection.find({ document_id: existingDoc._id }).toArray();
+      return res.status(200).json({
+        message: 'Document already processed. Returning cached result.',
+        documentId: existingDoc._id.toString(),
+        s3Url: existingDoc.s3_key,
+        pages: existingDoc.page_count || 1,
+        agentSummary: 'Loaded from database cache — no reprocessing needed.',
+        clauses: cachedClauses,
+        highlights: existingDoc.highlights || [],
+        cached: true,
+      });
     }
 
     console.log(`Extracting text from uploaded PDF: ${fileName} (${pdfBuffer.length} bytes)`);
+
     // 2. Parse PDF text
-    let parsedPdf;
+    let parsedPdf: any;
     try {
       parsedPdf = await pdf(pdfBuffer);
     } catch (e: any) {
@@ -56,8 +169,7 @@ router.post('/:matterId/documents', authMiddleware, async (req: AuthenticatedReq
     const pageCount = parsedPdf.numpages || 1;
 
     // 2a. OCR Fallback Check
-    const isScanned = ocrService.isScannedDocument(rawText);
-    if (isScanned) {
+    if (ocrService.isScannedDocument(rawText)) {
       console.log('Low text count detected. Falling back to Gemini AI OCR...');
       try {
         rawText = await ocrService.performOcr(pdfBuffer);
@@ -70,8 +182,7 @@ router.post('/:matterId/documents', authMiddleware, async (req: AuthenticatedReq
     const s3Key = `${orgId}/${matterId}/${Date.now()}_${fileName}`;
     const s3Url = await s3Service.uploadFile(pdfBuffer, s3Key, 'application/pdf');
 
-    // 4. Save initial document record in MongoDB
-    const docsCollection = await dbService.getCollection('documents') as any;
+    // 4. Save initial document record in MongoDB with status 'processing'
     const docRecord = {
       org_id: orgId,
       matter_id: new ObjectId(matterId),
@@ -81,159 +192,31 @@ router.post('/:matterId/documents', authMiddleware, async (req: AuthenticatedReq
       file_size: pdfBuffer.length,
       page_count: pageCount,
       version: 1,
-      versions: [
-        {
-          versionNumber: 1,
-          s3_key: s3Key,
-          fileName,
-          uploadedAt: new Date(),
-          uploadedBy: req.user?.userId || 'system',
-        },
-      ],
+      versions: [{ versionNumber: 1, s3_key: s3Key, fileName, uploadedAt: new Date(), uploadedBy: req.user?.userId || 'system' }],
       created_at: new Date(),
     };
     const insertRes = await docsCollection.insertOne(docRecord);
     const documentId = insertRes.insertedId.toString();
 
-    // Create Neo4j Nodes
+    // Create Neo4j Nodes synchronously (fast)
     await neo4jService.createMatterNode(matterId, matter.name || 'Matter', orgId);
     await neo4jService.createDocumentNode(documentId, matterId, fileName, 'contract');
 
-    // 5. Trigger Mastra processing workflow
-    console.log(`Triggering Mastra Workflow to structure document: ${documentId}`);
-    
-    const run = await documentWorkflow.createRun();
-    const workflowRes = await run.start({
-      inputData: {
-        orgId,
-        matterId,
-        documentId,
-        rawText,
-        pageCount,
-      },
+    // 5. ✅ ASYNC: Kick off AI processing in the background — don't block the response!
+    setImmediate(() => {
+      processDocumentInBackground(orgId, matterId, documentId, fileName, pdfBuffer, rawText, pageCount, req.user?.userId || 'system');
     });
-    
-    if (workflowRes.status === 'failed') {
-      throw new Error((workflowRes as any).error?.message || 'Workflow execution failed');
-    }
-    
-    const agentSummary = (workflowRes as any).result?.agentSummary || 'Structured extraction successfully finished via Mastra Workflow pipeline.';
 
-    // Retrieve the extracted clauses
-    const clausesCollection = await dbService.getCollection('clauses');
-    const extractedClauses = await clausesCollection.find({ document_id: new ObjectId(documentId) }).toArray();
-
-    // Create Clause nodes in Neo4j and compute highlights
-    console.log(`Mapping ${extractedClauses.length} clauses in Neo4j and extracting highlights coordinate map...`);
-    for (const cl of extractedClauses) {
-      await neo4jService.createClauseNode(
-        cl._id.toString(),
-        documentId,
-        cl.category || 'General',
-        cl.text,
-        cl.risk_level || 'low'
-      );
-    }
-
-    // Bounding box coordinate mapping (highlights overlay)
-    let enrichedHighlights: any[] = [];
-    try {
-      const pagesTextPositions = await pdfHighlightService.getTextPositions(pdfBuffer);
-      enrichedHighlights = pdfHighlightService.enrichHighlights(pagesTextPositions, extractedClauses);
-    } catch (hlErr) {
-      console.error('Failed to compute PDF text coordinate highlights:', hlErr);
-    }
-
-    // Update document status & store highlights + raw text in MongoDB
-    await docsCollection.updateOne(
-      { _id: new ObjectId(documentId) },
-      {
-        $set: {
-          status: 'completed',
-          raw_text: rawText,
-          highlights: enrichedHighlights,
-        },
-      }
-    );
-
-    // 6. Matter Twin: Auto-merge & conflict detection
-    try {
-      const allDocs = await docsCollection.find({ matter_id: new ObjectId(matterId) }).toArray();
-      // If we have more than 1 document, perform conflict detection
-      if (allDocs.length > 1) {
-        console.log(`Multiple documents detected under Matter ${matterId}. Running Matter Twin auto-merge...`);
-        const otherDocs = allDocs.filter((d: any) => d._id.toString() !== documentId);
-        const otherDocIds = otherDocs.map((d: any) => d._id);
-
-        const existingClauses = await clausesCollection
-          .find({ document_id: { $in: otherDocIds } })
-          .toArray();
-
-        const formatExisting = existingClauses.map(ec => ({
-          id: ec._id.toString(),
-          text: ec.text,
-          category: ec.category || 'General',
-          documentId: ec.document_id.toString(),
-        }));
-
-        const formatIncoming = extractedClauses.map(ic => ({
-          text: ic.text,
-          category: ic.category || 'General',
-          documentId,
-        }));
-
-        const twinResult = await matterTwinService.detectConflictsAndMerge(
-          formatExisting,
-          formatIncoming,
-          documentId
-        );
-
-        // Store twin state inside the Matter record
-        await mattersCollection.updateOne(
-          { _id: new ObjectId(matterId) },
-          {
-            $set: {
-              livingState: {
-                mergedClauses: twinResult.mergedClauses,
-                supersededClauses: twinResult.supersededClauses,
-                lastMergedAt: new Date(),
-              },
-              conflicts: twinResult.conflictingClauses,
-            },
-          }
-        );
-      } else {
-        // First document - merged state is just its extracted clauses
-        await mattersCollection.updateOne(
-          { _id: new ObjectId(matterId) },
-          {
-            $set: {
-              livingState: {
-                mergedClauses: extractedClauses.map(c => ({
-                  text: c.text,
-                  category: c.category || 'General',
-                  sourceDocId: documentId,
-                })),
-                supersededClauses: [],
-                lastMergedAt: new Date(),
-              },
-              conflicts: [],
-            },
-          }
-        );
-      }
-    } catch (twinErr) {
-      console.error('Matter Twin auto-merge failed:', twinErr);
-    }
-
-    return res.status(201).json({
-      message: 'Document uploaded and processed successfully',
+    // ✅ Return immediately — frontend should poll /status to know when it's done
+    return res.status(202).json({
+      message: 'Document uploaded successfully. AI processing started in background.',
       documentId,
       s3Url,
       pages: pageCount,
-      agentSummary,
-      clauses: extractedClauses,
-      highlights: enrichedHighlights,
+      status: 'processing',
+      agentSummary: 'AI analysis is running in the background. Please refresh in a moment.',
+      clauses: [],
+      highlights: [],
     });
 
   } catch (error: any) {
@@ -267,6 +250,29 @@ router.get('/:matterId/documents', authMiddleware, async (req: AuthenticatedRequ
     return res.json({ documents });
   } catch (error: any) {
     console.error('Error listing documents:', error);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ NEW: Get document processing status (for frontend polling)
+router.get('/:matterId/documents/:docId/status', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const { matterId, docId } = req.params;
+  const orgId = req.user?.orgId || 'org_default_firm';
+
+  try {
+    const docsCollection = await dbService.getCollection('documents') as any;
+    const document = await docsCollection.findOne({ _id: new ObjectId(docId), org_id: orgId, matter_id: new ObjectId(matterId) });
+
+    if (!document) return res.status(404).json({ error: 'Document not found' });
+
+    if (document.status === 'completed') {
+      const clausesCollection = await dbService.getCollection('clauses');
+      const clauses = await clausesCollection.find({ document_id: new ObjectId(docId) }).toArray();
+      return res.json({ status: 'completed', clauses, highlights: document.highlights || [], pages: document.page_count || 1 });
+    }
+
+    return res.json({ status: document.status || 'processing', clauses: [], highlights: [], processingError: document.processingError || null });
+  } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
 });

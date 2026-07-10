@@ -6,6 +6,8 @@ import { getEmbedding } from '../utils/embedding.js';
 import { ObjectId } from 'mongodb';
 
 import { objectIdToUuid } from '../utils/uuid.js';
+import { Neo4jService } from '../services/neo4j.service.js';
+
 
 const dbService = DbService.getInstance();
 const qdrantService = QdrantService.getInstance();
@@ -104,14 +106,30 @@ export const searchQdrantTool = createTool({
     try {
       const vector = await getEmbedding(queryText);
       const searchRes = await qdrantService.searchPoints('legal_documents', vector, orgId, limit);
+      const neo4jService = Neo4jService.getInstance();
 
-      const results = searchRes.map((point: any) => ({
-        clauseId: point.payload.clause_id,
-        rawText: point.payload.raw_text,
-        clauseType: point.payload.clause_type,
-        score: point.score,
-        pageNumber: point.payload.page_number,
-      }));
+      const results = await Promise.all(
+        searchRes.map(async (point: any) => {
+          const clauseId = point.payload.clause_id;
+          let graphContext = '';
+          try {
+            const neighbors = await neo4jService.getClauseNeighbors(clauseId);
+            if (neighbors && neighbors.length > 0) {
+              graphContext = ` [Graph Context: ${neighbors.map(n => n.summary).join('; ')}]`;
+            }
+          } catch (neoErr) {
+            console.warn('Failed to retrieve Neo4j neighbors for GraphRAG context:', neoErr);
+          }
+
+          return {
+            clauseId,
+            rawText: (point.payload.raw_text || '') + graphContext,
+            clauseType: point.payload.clause_type,
+            score: point.score,
+            pageNumber: point.payload.page_number,
+          };
+        })
+      );
 
       return { results };
     } catch (error) {

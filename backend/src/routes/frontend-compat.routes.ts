@@ -633,10 +633,76 @@ router.post('/contracts/:id/analyze', authMiddleware, async (req: AuthenticatedR
   const objectId = safeObjectId(req.params.id);
   const orgId = req.user?.orgId ?? 'org_default_firm';
   if (!objectId) return res.status(404).json({ error: 'Contract not found.' });
-  const analysisStatus = req.query.full ? 'ANALYZING' : 'DONE';
-  await dbService.getCollection('documents').then((c) => c.updateOne({ _id: objectId, ...orgFilter(orgId) }, { $set: { analysisStatus, updated_at: new Date() } }));
-  return res.json({ ok: true });
+
+  const docsCollection = await dbService.getCollection('documents');
+  const document: any = await docsCollection.findOne({ _id: objectId, ...orgFilter(orgId) });
+  if (!document) return res.status(404).json({ error: 'Contract not found.' });
+
+  // Mark as analyzing immediately, respond to client
+  await docsCollection.updateOne({ _id: objectId }, { $set: { analysisStatus: 'ANALYZING', updated_at: new Date() } });
+  res.json({ ok: true, analysisStatus: 'ANALYZING' });
+
+  // ✅ Run AI analysis in background
+  setImmediate(async () => {
+    try {
+      const clausesCollection = await dbService.getCollection('clauses');
+      const rawText = document.raw_text ?? '';
+      if (!rawText.trim()) {
+        await docsCollection.updateOne({ _id: objectId }, { $set: { analysisStatus: 'DONE', updated_at: new Date() } });
+        return;
+      }
+
+      // Idempotency: skip if clauses already exist
+      const existingCount = await clausesCollection.countDocuments({ document_id: objectId });
+      if (existingCount > 0) {
+        await docsCollection.updateOne({ _id: objectId }, { $set: { analysisStatus: 'DONE', updated_at: new Date() } });
+        return;
+      }
+
+      const geminiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? '';
+      if (!geminiKey) {
+        await docsCollection.updateOne({ _id: objectId }, { $set: { analysisStatus: 'FAILED', analysisError: 'GEMINI_API_KEY not configured', updated_at: new Date() } });
+        return;
+      }
+
+      const prompt = `Analyze this legal contract. Break it into clauses. Return ONLY a valid JSON array of objects with: category (string), rawText (string), pageNumber (number). No markdown, no backticks.
+
+Contract:
+---
+${rawText.substring(0, 12000)}
+---`;
+
+      const geminiRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }
+      );
+      const geminiData: any = await geminiRes.json();
+      const responseText = (geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? '').replace(/```json/g, '').replace(/```/g, '').trim();
+
+      let clauses: any[] = [];
+      try { clauses = JSON.parse(responseText); } catch { clauses = [{ category: 'General', rawText: rawText.substring(0, 500), pageNumber: 1 }]; }
+
+      const matterId = document.matter_id ?? null;
+      const clauseRecords = clauses.map((c: any) => ({
+        org_id: orgId,
+        document_id: objectId,
+        matter_id: matterId,
+        category: c.category ?? 'General',
+        raw_text: c.rawText ?? c.raw_text ?? '',
+        page_number: typeof c.pageNumber === 'number' ? c.pageNumber : 1,
+        created_at: new Date(),
+      }));
+
+      if (clauseRecords.length > 0) await clausesCollection.insertMany(clauseRecords);
+      await docsCollection.updateOne({ _id: objectId }, { $set: { analysisStatus: 'DONE', updated_at: new Date() } });
+      console.log(`[Analyze] Extracted ${clauseRecords.length} clauses for contract ${objectId}`);
+    } catch (err: any) {
+      console.error(`[Analyze] Failed for contract ${objectId}:`, err);
+      await dbService.getCollection('documents').then((c) => c.updateOne({ _id: objectId }, { $set: { analysisStatus: 'FAILED', analysisError: err.message, updated_at: new Date() } }));
+    }
+  });
 });
+
 
 router.post('/contracts/:id/cancel-analysis', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   const objectId = safeObjectId(req.params.id);
@@ -792,7 +858,153 @@ router.delete('/contracts/:id/share/:linkId', authMiddleware, async (req: Authen
   return res.json({ ok: true });
 });
 
+// ✅ NEW: GET /contracts/:id/obligations — return stored obligations from DB
+router.get('/contracts/:id/obligations', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const contractId = safeObjectId(req.params.id);
+  const orgId = req.user?.orgId ?? 'org_default_firm';
+  if (!contractId) return res.status(404).json({ error: 'Contract not found.' });
+
+  try {
+    const obligationsCollection = await dbService.getCollection('obligations');
+    const rawList = await obligationsCollection.find({ document_id: contractId, ...orgFilter(orgId) }).sort({ created_at: -1 }).toArray();
+
+    const mapped = rawList.map((o: any) => ({
+      id: o._id.toString(),
+      type: o.type ?? o.obligation_type ?? 'other',
+      description: o.description ?? o.raw_text ?? '',
+      owner: o.owner ?? o.party ?? 'Party',
+      dueDate: o.due_date ? new Date(o.due_date).toISOString() : null,
+      recurrence: o.recurrence ?? 'once',
+      trigger: o.trigger ?? null,
+      quote: o.quote ?? o.raw_text ?? '',
+      severity: o.severity ?? o.risk_level ?? 'low',
+      sectionRef: o.section_ref ?? null,
+      status: (o.status ?? 'OPEN').toUpperCase(),
+      completedAt: o.completedAt ? new Date(o.completedAt).toISOString() : null,
+      notifiedAt: o.notifiedAt ? new Date(o.notifiedAt).toISOString() : null,
+    }));
+
+    return res.json({ data: mapped, summary: null, extractedAt: rawList[0]?.created_at?.toISOString() ?? null });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ✅ NEW: POST /contracts/:id/extract-obligations — trigger on-demand AI extraction
+router.post('/contracts/:id/extract-obligations', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const contractId = safeObjectId(req.params.id);
+  const orgId = req.user?.orgId ?? 'org_default_firm';
+  if (!contractId) return res.status(404).json({ error: 'Contract not found.' });
+
+  try {
+    const docsCollection = await dbService.getCollection('documents');
+    const document: any = await docsCollection.findOne({ _id: contractId, ...orgFilter(orgId) });
+    if (!document) return res.status(404).json({ error: 'Contract not found.' });
+
+    const clausesCollection = await dbService.getCollection('clauses');
+    const obligationsCollection = await dbService.getCollection('obligations');
+
+    // Get existing clauses if available
+    const existingClauses = await clausesCollection.find({ document_id: contractId }).toArray();
+    let clausesText = existingClauses.length > 0
+      ? existingClauses.map((c: any) => `[${c.category}]: ${c.raw_text}`).join('\n')
+      : (document.raw_text ?? '').substring(0, 8000);
+
+    if (!clausesText.trim()) {
+      return res.json({ ok: true, obligations: [], summary: 'No text content available to extract obligations from.' });
+    }
+
+    // Use Gemini REST API to extract obligations (same pattern as embedding.ts)
+    const geminiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? '';
+    if (!geminiKey) {
+      return res.status(500).json({ error: 'GEMINI_API_KEY not configured.' });
+    }
+
+    const prompt = `You are a legal obligation extractor. Given contract clauses, extract all legal obligations.
+For each obligation, return a JSON object with:
+- type: one of [payment, sla, renewal, audit, report, termination, compliance, other]
+- description: clear obligation description
+- owner: which party owns this obligation
+- dueDate: ISO date string or null
+- recurrence: once, monthly, quarterly, annual, or on_trigger
+- trigger: triggering condition if no fixed date (or null)
+- quote: verbatim text from contract
+- severity: high, medium, or low
+
+Return ONLY a valid JSON array. No markdown, no backticks.
+
+Contract text:
+---
+${clausesText}
+---`;
+
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+      }
+    );
+    const geminiData: any = await geminiRes.json();
+    const responseText = (geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? '')
+      .replace(/```json/g, '').replace(/```/g, '').trim();
+
+
+    let obligations: any[] = [];
+    try {
+      obligations = JSON.parse(responseText);
+    } catch {
+      obligations = [{ type: 'other', description: 'Review obligations manually', owner: 'All Parties', dueDate: null, recurrence: 'once', trigger: null, quote: '', severity: 'low' }];
+    }
+
+    // Store in DB (replacing previous extractions for this contract)
+    await obligationsCollection.deleteMany({ document_id: contractId, org_id: orgId });
+    const matterId = document.matter_id;
+    const records = obligations.map((o: any) => ({
+      org_id: orgId,
+      document_id: contractId,
+      matter_id: matterId,
+      type: o.type ?? 'other',
+      description: o.description ?? '',
+      owner: o.owner ?? 'Party',
+      due_date: o.dueDate ? new Date(o.dueDate) : null,
+      recurrence: o.recurrence ?? 'once',
+      trigger: o.trigger ?? null,
+      quote: o.quote ?? '',
+      raw_text: o.quote ?? o.description ?? '',
+      severity: o.severity ?? 'low',
+      section_ref: o.sectionRef ?? null,
+      status: 'OPEN',
+      created_at: new Date(),
+    }));
+
+    if (records.length > 0) await obligationsCollection.insertMany(records);
+
+    const mapped = records.map((r: any, idx: number) => ({
+      id: obligations[idx]?.id ?? `new_${idx}`,
+      type: r.type,
+      description: r.description,
+      owner: r.owner,
+      dueDate: r.due_date?.toISOString() ?? null,
+      recurrence: r.recurrence,
+      trigger: r.trigger,
+      quote: r.quote,
+      severity: r.severity,
+      sectionRef: r.section_ref,
+      status: 'OPEN',
+      completedAt: null,
+      notifiedAt: null,
+    }));
+
+    return res.json({ ok: true, obligations: mapped, summary: `Extracted ${mapped.length} obligations.` });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/contracts/:id/send-for-signature', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+
   const contractId = safeObjectId(req.params.id);
   const orgId = req.user?.orgId ?? 'org_default_firm';
   if (!contractId) return res.status(404).json({ error: 'Contract not found.' });
@@ -801,6 +1013,7 @@ router.post('/contracts/:id/send-for-signature', authMiddleware, async (req: Aut
   if (!document) return res.status(404).json({ error: 'Contract not found.' });
   const signers = Array.isArray(req.body.signers) ? req.body.signers : [];
   if (signers.length === 0) return res.status(400).json({ error: 'At least one signer is required.' });
+  const counterpartyId = document.counterparty_id ? new ObjectId(document.counterparty_id) : null;
   const normalizedSigners = signers.map((s: any, idx: number) => ({
     id: new ObjectId().toString(),
     name: s.name,
@@ -811,11 +1024,13 @@ router.post('/contracts/:id/send-for-signature', authMiddleware, async (req: Aut
     otp: String(Math.floor(100000 + Math.random() * 900000)),
     status: 'PENDING',
     signedAt: null,
+    counterparty_id: counterpartyId,
   }));
   const requestDoc = {
     org_id: orgId,
     orgId,
     contractId,
+    counterparty_id: counterpartyId,
     status: 'PENDING',
     signOrder: req.body.signOrder ?? 'ANY',
     expiresAt: new Date(Date.now() + Number(req.body.expiresInDays ?? 14) * 86_400_000),
@@ -1107,6 +1322,96 @@ router.get('/portal/:token/contract', async (req: Request, res: Response) => {
 
 router.post('/portal/:token/versions', async (_req: Request, res: Response) => {
   return res.json({ ok: true });
+});
+
+// Autocomplete copilot (GhostCompletion)
+router.post('/agent/complete', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const { contextBefore, contextAfter } = req.body;
+  const geminiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? '';
+  if (!geminiKey) return res.status(500).json({ error: 'Gemini API key not configured' });
+
+  try {
+    const prompt = `You are a contract drafting copilot.
+Context before cursor:
+"${contextBefore}"
+
+Context after cursor (for style reference):
+"${contextAfter}"
+
+Predict the NEXT few words or next sentence to complete the clause naturally. Return ONLY the predicted text (no introductions, no markdown, no quotes). Keep it under 25 words.`;
+
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }
+    );
+    const geminiData: any = await geminiRes.json();
+    const completion = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    return res.json({ completion });
+  } catch (err: any) {
+    console.error('Agent complete error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Live paragraph category classifier (ClauseClassifier)
+router.post('/agent/classify-clause', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const { paragraph } = req.body;
+  const geminiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? '';
+  if (!geminiKey) return res.status(500).json({ error: 'Gemini API key not configured' });
+
+  try {
+    const prompt = `Classify the category of the following contract paragraph.
+Paragraph:
+"${paragraph}"
+
+Output ONLY a valid JSON object matching this structure:
+{
+  "category": "Termination" | "Liability" | "Payment" | "Indemnity" | "Governing Law" | "General",
+  "reason": "brief reason for classification",
+  "confidence": 0.95,
+  "isStandard": true
+}
+Do not wrap in markdown or backticks.`;
+
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }
+    );
+    const geminiData: any = await geminiRes.json();
+    const text = (geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? '').replace(/```json/g, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(text);
+    return res.json(parsed);
+  } catch (err: any) {
+    console.error('Agent classify error:', err);
+    return res.json({ category: 'General', reason: 'Failed to classify automatically', confidence: 0.5, isStandard: false });
+  }
+});
+
+// AI editor assistant (ContractEditor inline command assist)
+router.post('/agent/assist', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const { command, text } = req.body;
+  const geminiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? '';
+  if (!geminiKey) return res.status(500).json({ error: 'Gemini API key not configured' });
+
+  try {
+    const prompt = `You are a contract editing assistant.
+Action requested: "${command}"
+Target text:
+"${text}"
+
+Perform the requested action on the text. Return ONLY the rewritten text (no quotes, no markdown, no chat introduction).`;
+
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) }
+    );
+    const geminiData: any = await geminiRes.json();
+    const suggestion = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    return res.json({ suggestion });
+  } catch (err: any) {
+    console.error('Agent assist error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;

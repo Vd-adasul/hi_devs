@@ -189,6 +189,18 @@ const extractClausesStep = createStep({
     const triggerData = getInitData<any>();
     const { orgId, matterId, documentId, rawText, pageCount } = triggerData;
 
+    const dbService = DbService.getInstance();
+    const clausesCollection = await dbService.getCollection('clauses');
+
+    // ✅ IDEMPOTENCY: If clauses already exist for this document, skip re-extraction
+    const existingCount = await clausesCollection.countDocuments({ document_id: new ObjectId(documentId) });
+    if (existingCount > 0) {
+      console.log(`[Idempotency] ${existingCount} clauses already exist for document ${documentId}. Skipping AI extraction.`);
+      return {
+        agentSummary: `Loaded ${existingCount} existing clauses from database. No re-extraction needed.`,
+      };
+    }
+
     const prompt = `
       You are analyzing a legal contract for Organization ID: ${orgId}, Matter ID: ${matterId}, Document ID: ${documentId}.
       Here is the contract text:
@@ -222,8 +234,6 @@ const extractClausesStep = createStep({
       }];
     }
 
-    const dbService = DbService.getInstance();
-    const clausesCollection = await dbService.getCollection('clauses');
     const qdrantService = QdrantService.getInstance();
 
     const points: any[] = [];

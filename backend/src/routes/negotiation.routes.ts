@@ -202,7 +202,34 @@ router.get('/:id/recommend', authMiddleware, async (req: AuthenticatedRequest, r
     `;
 
     const rawAgentOutput = await callAgent(negotiationAgent, prompt);
-    const parsed = JSON.parse(rawAgentOutput);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(rawAgentOutput);
+    } catch (e) {
+      console.warn('Failed to parse AI negotiation recommendation JSON, attempting regex cleanup:', e);
+      const match = rawAgentOutput.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          parsed = JSON.parse(match[0]);
+        } catch {
+          parsed = null;
+        }
+      }
+    }
+
+    if (!parsed || !parsed.action) {
+      parsed = {
+        action: 'counter',
+        proposedClauses: session.playbookSnapshot?.slice(0, 3).map((r: any) => ({
+          type: r.clauseType,
+          proposed: r.ourPosition,
+          rationale: 'Preferred position suggested due to model parsing fallback.',
+        })) || [],
+        reasoning: 'Concession fallback suggestion generated due to parsing failure of AI recommendation.',
+        confidence: 60,
+        zopaEstimate: 0.5,
+      };
+    }
 
     return res.json(parsed);
   } catch (error: any) {

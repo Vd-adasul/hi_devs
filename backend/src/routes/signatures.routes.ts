@@ -32,6 +32,8 @@ router.post('/request', authMiddleware, async (req: AuthenticatedRequest, res: R
       return res.status(404).json({ error: 'Document not found.' });
     }
 
+    const counterpartyId = document.counterparty_id ? new ObjectId(document.counterparty_id) : null;
+
     const signersWithTokens = signers.map(s => ({
       email: s.email,
       name: s.name,
@@ -39,11 +41,13 @@ router.post('/request', authMiddleware, async (req: AuthenticatedRequest, res: R
       token: crypto.randomBytes(32).toString('hex'),
       otp: generateOtp(),
       signedAt: null,
+      counterparty_id: counterpartyId,
     }));
 
     const newRequest = {
       org_id: orgId,
       contractId: new ObjectId(contractId),
+      counterparty_id: counterpartyId,
       status: 'pending',
       signers: signersWithTokens,
       created_at: new Date(),
